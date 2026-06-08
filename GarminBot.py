@@ -1,10 +1,8 @@
+import datetime as dt
 import json
 import os
 import random
-import threading
-import time
 
-from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -95,12 +93,12 @@ WORKOUT_GOALS = {
 }
 
 PLAN_LABELS = {
-    "conservative":  "Conservative — Zone 2 & Base",
-    "maintain":      "Maintain — Sweet Spot & Tempo",
-    "general_fitness": "General Fitness — Sweet Spot & Threshold",
-    "ftp":           "FTP — Threshold Training",
-    "vo2max":        "VO2Max — Intervals",
-    "endurance":     "Endurance — LSD",
+    "conservative":   "Conservative — Zone 2 & Base",
+    "maintain":       "Maintain — Sweet Spot & Tempo",
+    "general_fitness":"General Fitness — Sweet Spot & Threshold",
+    "ftp":            "FTP — Threshold Training",
+    "vo2max":         "VO2Max — Intervals",
+    "endurance":      "Endurance — LSD",
 }
 
 REST_DAY_THRESHOLD = 25
@@ -111,7 +109,7 @@ REST_DAY_THRESHOLD = 25
 
 def get_metrics():
 
-    today = date.today().strftime("%Y-%m-%d")
+    today = dt.date.today().strftime("%Y-%m-%d")
     score = 50
     hrv         = None
     sleep_score = None
@@ -249,35 +247,22 @@ async def send_daily_recommendation(app):
     score_bar = "█" * (metrics["score"] // 10) + "░" * (10 - metrics["score"] // 10)
 
     if workout is None:
-        text = (
-            f"😴 Garmin AI Coach\n\n"
-            f"יום מנוחה מומלץ היום\n\n"
-            f"ציון: {metrics['score']}/100\n"
-            f"{score_bar}\n\n"
-            f"HRV: {metrics['hrv']}\n"
-            f"שינה: {metrics['sleep']}\n"
-            f"עומס: {metrics['load']}\n\n"
-            f"הגוף שלך צריך לנוח."
+        await app.bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                f"😴 Garmin AI Coach\n\n"
+                f"יום מנוחה מומלץ היום\n\n"
+                f"ציון: {metrics['score']}/100\n"
+                f"{score_bar}\n\n"
+                f"HRV: {metrics['hrv']}\n"
+                f"שינה: {metrics['sleep']}\n"
+                f"עומס: {metrics['load']}\n\n"
+                f"הגוף שלך צריך לנוח."
+            )
         )
-        await app.bot.send_message(chat_id=CHAT_ID, text=text)
         return
 
     duration = round(workout["estimatedDurationInSecs"] / 60)
-
-    text = (
-        f"🚴 Garmin AI Coach\n\n"
-        f"תוכנית: {PLAN_LABELS[GOAL]}\n"
-        f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}\n\n"
-        f"ציון: {metrics['score']}/100\n"
-        f"{score_bar}\n\n"
-        f"HRV: {metrics['hrv']}\n"
-        f"שינה: {metrics['sleep']}\n"
-        f"עומס: {metrics['load']}\n\n"
-        f"אימון:\n"
-        f"{workout['workoutName']}\n\n"
-        f"משך: {duration} דקות\n\n"
-        f"להוסיף ללוח Garmin?"
-    )
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -286,7 +271,30 @@ async def send_daily_recommendation(app):
         ]
     ])
 
-    await app.bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=keyboard)
+    await app.bot.send_message(
+        chat_id=CHAT_ID,
+        text=(
+            f"🚴 Garmin AI Coach\n\n"
+            f"תוכנית: {PLAN_LABELS[GOAL]}\n"
+            f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}\n\n"
+            f"ציון: {metrics['score']}/100\n"
+            f"{score_bar}\n\n"
+            f"HRV: {metrics['hrv']}\n"
+            f"שינה: {metrics['sleep']}\n"
+            f"עומס: {metrics['load']}\n\n"
+            f"אימון:\n{workout['workoutName']}\n\n"
+            f"משך: {duration} דקות\n\n"
+            f"להוסיף ללוח Garmin?"
+        ),
+        reply_markup=keyboard
+    )
+
+# =====================================================
+# DAILY JOB (JobQueue)
+# =====================================================
+
+async def daily_job(context: ContextTypes.DEFAULT_TYPE):
+    await send_daily_recommendation(context.application)
 
 # =====================================================
 # COMMAND: /coach
@@ -381,7 +389,6 @@ async def button_handler(
     await query.answer()
     data  = query.data
 
-    # --- Plan change ---
     if data.startswith("plan_"):
         new_plan = data.replace("plan_", "")
 
@@ -391,24 +398,19 @@ async def button_handler(
 
         GOAL = new_plan
 
-        # שמירה ל-config.json
         with open("config.json", "w", encoding="utf-8") as f:
             json.dump({"plan": GOAL}, f)
 
-        await query.edit_message_text(
-            f"✅ תוכנית עודכנה!\n\n{PLAN_LABELS[GOAL]}"
-        )
+        await query.edit_message_text(f"✅ תוכנית עודכנה!\n\n{PLAN_LABELS[GOAL]}")
         return
 
-    # --- Skip workout ---
     if data == "skip":
         await query.edit_message_text("Workout skipped.")
         return
 
-    # --- Schedule workout ---
     if data.startswith("schedule_"):
         workout_id = data.replace("schedule_", "")
-        today      = date.today().strftime("%Y-%m-%d")
+        today      = dt.date.today().strftime("%Y-%m-%d")
 
         try:
             client.schedule_workout(workout_id, today)
@@ -417,33 +419,25 @@ async def button_handler(
             await query.edit_message_text(f"❌ Failed: {e}")
 
 # =====================================================
-# REGISTER COMMANDS (מציג את התפריט כשמקלידים /)
+# POST INIT — פקודות + סקדולר
 # =====================================================
 
 async def post_init(app: Application):
+    # תפריט פקודות (מופיע כשמקלידים /)
     await app.bot.set_my_commands([
         BotCommand("coach",   "🚴 קבל המלצת אימון עכשיו"),
         BotCommand("status",  "📊 הצג מצב ומדדים נוכחיים"),
         BotCommand("setplan", "📋 שנה תוכנית אימון"),
     ])
 
-# =====================================================
-# DAILY SCHEDULER
-# =====================================================
+    # שליחה יומית ב-8:00 ישראל, כל יום חוץ משבת
+    app.job_queue.run_daily(
+        daily_job,
+        time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ),
+        days=(0, 1, 2, 3, 4, 6),  # ראשון עד שישי
+    )
 
-def scheduler_loop(app):
-    while True:
-        now = datetime.now(ISRAEL_TZ)
-
-        if (
-            now.hour == 8
-            and now.minute == 0
-            and now.weekday() != 5
-        ):
-            app.create_task(send_daily_recommendation(app))
-            time.sleep(70)
-
-        time.sleep(20)
+    print("Scheduled daily job at 08:00 Israel time")
 
 # =====================================================
 # MAIN
@@ -461,12 +455,6 @@ def main():
     app.add_handler(CommandHandler("status",  status_command))
     app.add_handler(CommandHandler("setplan", setplan_command))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    threading.Thread(
-        target=scheduler_loop,
-        args=(app,),
-        daemon=True
-    ).start()
 
     print("Telegram bot started")
     app.run_polling()
