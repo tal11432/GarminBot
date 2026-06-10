@@ -392,6 +392,38 @@ def save_history(key: str):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history[-HISTORY_LENGTH:], f)
 
+
+# =====================================================
+# SCHEDULED TODAY — מניעת Double Booking
+# =====================================================
+
+SCHEDULED_TODAY_FILE = "scheduled_today.json"
+
+
+def get_scheduled_today() -> dict | None:
+    try:
+        with open(SCHEDULED_TODAY_FILE, "r") as f:
+            data = json.load(f)
+        if data.get("date") == dt.date.today().isoformat():
+            return data
+        return None
+    except Exception:
+        return None
+
+
+def save_scheduled_today(key: str, name: str):
+    with open(SCHEDULED_TODAY_FILE, "w") as f:
+        json.dump({"date": dt.date.today().isoformat(), "key": key, "name": name}, f)
+
+
+# =====================================================
+# AUTHORIZATION — רק הבעלים יכול לשלוט בבוט
+# =====================================================
+
+def is_authorized(update: Update) -> bool:
+    return str(update.effective_chat.id) == CHAT_ID
+
+
 # =====================================================
 # FTP TEST TRACKING
 # =====================================================
@@ -543,6 +575,7 @@ def upload_and_schedule(workout_key: str) -> str:
     except Exception:
         pass  # לא קריטי אם המחיקה נכשלת
     save_history(workout_key)
+    save_scheduled_today(workout_key, w["name"])
     return w["name"]
 
 # =====================================================
@@ -550,6 +583,9 @@ def upload_and_schedule(workout_key: str) -> str:
 # =====================================================
 
 async def send_daily_recommendation(app):
+    scheduled = get_scheduled_today()
+    if scheduled:
+        return
     global GOAL
     metrics = get_metrics()
     score   = metrics["score"]
@@ -649,6 +685,12 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
+    scheduled = get_scheduled_today()
+    if scheduled:
+        await update.message.reply_text(f"✅ כבר תזמנת אימון היום:\n{scheduled['name']}")
+        return
     global GOAL
     metrics = get_metrics()
     score   = metrics["score"]
@@ -681,6 +723,8 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
     global GOAL
     metrics     = get_metrics()
     score       = metrics["score"]
@@ -705,6 +749,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟦 Conservative",    callback_data="plan_conservative")],
         [InlineKeyboardButton("🟩 Maintain",        callback_data="plan_maintain")],
@@ -720,6 +766,8 @@ async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
     record_ftp_done()
     next_date = dt.date.today() + dt.timedelta(weeks=FTP_REMINDER_WEEKS)
     await update.message.reply_text(
@@ -731,6 +779,8 @@ async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
     global GOAL
     query = update.callback_query
     await query.answer()
