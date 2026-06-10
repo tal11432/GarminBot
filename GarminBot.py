@@ -38,24 +38,37 @@ from telegram.ext import (
 
 load_dotenv()
 
-EMAIL          = os.getenv("GARMIN_EMAIL")
-PASSWORD       = os.getenv("GARMIN_PASSWORD")
-BOT_TOKEN      = os.getenv("BOT_TOKEN")
-CHAT_ID        = os.getenv("CHAT_ID")
-ISRAEL_TZ      = ZoneInfo("Asia/Jerusalem")
-GARMIN_TOKENS  = "garmin_tokens.json"
-HISTORY_FILE   = "history.json"
+EMAIL         = os.getenv("GARMIN_EMAIL")
+PASSWORD      = os.getenv("GARMIN_PASSWORD")
+BOT_TOKEN     = os.getenv("BOT_TOKEN")
+CHAT_ID       = os.getenv("CHAT_ID")
+ISRAEL_TZ     = ZoneInfo("Asia/Jerusalem")
+GARMIN_TOKENS = "garmin_tokens.json"
+HISTORY_FILE  = "history.json"
 HISTORY_LENGTH = 7
+
+CONSECUTIVE_REST_THRESHOLD = 3   # ימי אימון רצופים לפני מנוחה כפויה
+FTP_REMINDER_WEEKS         = 8   # כל כמה שבועות להזכיר FTP test
+REST_DAY_THRESHOLD         = 25
 
 if not EMAIL or not PASSWORD:
     raise ValueError("Missing Garmin credentials")
 if not BOT_TOKEN or not CHAT_ID:
     raise ValueError("Missing Telegram credentials")
 
-with open("config.json", "r", encoding="utf-8") as f:
-    CONFIG = json.load(f)
 
-GOAL = CONFIG["plan"]
+def load_config() -> dict:
+    with open("config.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_config(data: dict):
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+CONFIG = load_config()
+GOAL   = CONFIG.get("plan", "ftp")
 
 # =====================================================
 # GARMIN LOGIN
@@ -83,7 +96,6 @@ CYCLING_SPORT = {"sportTypeId": 2, "sportTypeKey": "cycling"}
 
 
 def pz(zone_num: int) -> dict:
-    """Power zone targetType + value fields."""
     return {
         "workoutTargetTypeId": TargetType.POWER,
         "workoutTargetTypeKey": "power.zone",
@@ -94,32 +106,23 @@ def pz(zone_num: int) -> dict:
 
 
 def pz_step(base_step: ExecutableStep, zone_num: int) -> ExecutableStep:
-    """Add power zone target to any step."""
     d = base_step.model_dump()
-    d["targetType"] = pz(zone_num)
+    d["targetType"]    = pz(zone_num)
     d["targetValueOne"] = zone_num
     d["targetValueTwo"] = zone_num
     return ExecutableStep(**d)
 
 
 def seg(steps) -> WorkoutSegment:
-    return WorkoutSegment(
-        segmentOrder=1,
-        sportType=CYCLING_SPORT,
-        workoutSteps=steps,
-    )
+    return WorkoutSegment(segmentOrder=1, sportType=CYCLING_SPORT, workoutSteps=steps)
 
 
 def ride(name: str, total_secs: int, steps) -> CyclingWorkout:
-    return CyclingWorkout(
-        workoutName=name,
-        estimatedDurationInSecs=total_secs,
-        workoutSegments=[seg(steps)],
-    )
+    return CyclingWorkout(workoutName=name, estimatedDurationInSecs=total_secs,
+                          workoutSegments=[seg(steps)])
 
 
 # ---- FTP / THRESHOLD ----
-
 def make_threshold_2x20():
     return ride("Threshold 2×20", 3900, [
         pz_step(create_warmup_step(600, 1),    2),
@@ -128,7 +131,6 @@ def make_threshold_2x20():
         pz_step(create_interval_step(1200, 4), 4),
         pz_step(create_cooldown_step(600, 5),  2),
     ])
-
 
 def make_threshold_3x12():
     return ride("Threshold 3×12", 3720, [
@@ -140,7 +142,6 @@ def make_threshold_3x12():
         pz_step(create_cooldown_step(600, 3), 2),
     ])
 
-
 def make_threshold_4x8():
     return ride("Threshold 4×8", 3240, [
         pz_step(create_warmup_step(600, 1), 2),
@@ -150,7 +151,6 @@ def make_threshold_4x8():
         ], step_order=2),
         pz_step(create_cooldown_step(600, 3), 2),
     ])
-
 
 def make_over_under():
     return ride("Over-Under 4×(5+3)", 3960, [
@@ -162,7 +162,6 @@ def make_over_under():
         ], step_order=2),
         pz_step(create_cooldown_step(600, 3), 2),
     ])
-
 
 def make_pyramid_threshold():
     return ride("Pyramid Threshold", 4710, [
@@ -179,9 +178,7 @@ def make_pyramid_threshold():
         pz_step(create_cooldown_step(600, 11), 2),
     ])
 
-
 # ---- SWEET SPOT ----
-
 def make_sweet_spot_2x20():
     return ride("Sweet Spot 2×20", 3900, [
         pz_step(create_warmup_step(600, 1),    2),
@@ -190,7 +187,6 @@ def make_sweet_spot_2x20():
         pz_step(create_interval_step(1200, 4), 3),
         pz_step(create_cooldown_step(600, 5),  2),
     ])
-
 
 def make_sweet_spot_3x12():
     return ride("Sweet Spot 3×12", 3480, [
@@ -202,16 +198,13 @@ def make_sweet_spot_3x12():
         pz_step(create_cooldown_step(600, 3), 2),
     ])
 
-
 # ---- TEMPO ----
-
 def make_tempo_40():
     return ride("Tempo 40min", 3600, [
         pz_step(create_warmup_step(600, 1),    2),
         pz_step(create_interval_step(2400, 2), 3),
         pz_step(create_cooldown_step(600, 3),  2),
     ])
-
 
 def make_tempo_2x20():
     return ride("Tempo 2×20", 3900, [
@@ -222,9 +215,7 @@ def make_tempo_2x20():
         pz_step(create_cooldown_step(600, 5),  2),
     ])
 
-
 # ---- VO2MAX ----
-
 def make_vo2_5x5():
     return ride("VO2Max 5×5", 4500, [
         pz_step(create_warmup_step(900, 1), 2),
@@ -234,7 +225,6 @@ def make_vo2_5x5():
         ], step_order=2),
         pz_step(create_cooldown_step(600, 3), 2),
     ])
-
 
 def make_vo2_4x6():
     return ride("VO2Max 4×6", 4260, [
@@ -246,7 +236,6 @@ def make_vo2_4x6():
         pz_step(create_cooldown_step(600, 3), 2),
     ])
 
-
 def make_vo2_30_30():
     return ride("VO2Max 30/30 ×15", 2700, [
         pz_step(create_warmup_step(900, 1), 2),
@@ -256,7 +245,6 @@ def make_vo2_30_30():
         ], step_order=2),
         pz_step(create_cooldown_step(600, 3), 2),
     ])
-
 
 def make_vo2_micro():
     return ride("VO2Max Micro-Burst 40/20", 3300, [
@@ -268,16 +256,13 @@ def make_vo2_micro():
         pz_step(create_cooldown_step(600, 3), 2),
     ])
 
-
 # ---- BASE / RECOVERY ----
-
 def make_zone2_45():
     return ride("Zone 2 — 45min", 3000, [
         pz_step(create_warmup_step(300, 1),    2),
         pz_step(create_interval_step(2400, 2), 2),
         pz_step(create_cooldown_step(300, 3),  2),
     ])
-
 
 def make_zone2_60():
     return ride("Zone 2 — 60min", 3600, [
@@ -286,7 +271,6 @@ def make_zone2_60():
         pz_step(create_cooldown_step(300, 3),  2),
     ])
 
-
 def make_lsd_90():
     return ride("LSD — 90min", 5400, [
         pz_step(create_warmup_step(300, 1),    2),
@@ -294,85 +278,80 @@ def make_lsd_90():
         pz_step(create_cooldown_step(300, 3),  2),
     ])
 
-
 def make_active_recovery():
     return ride("Active Recovery 30min", 1800, [
         pz_step(create_interval_step(1800, 1), 1),
     ])
 
-
 # =====================================================
 # WORKOUT LIBRARY
-# key, name, duration label, factory function
 # =====================================================
 
 def W(key, name, dur, fn):
     return {"key": key, "name": name, "dur": dur, "fn": fn}
 
-
 WORKOUT_LIBRARY = {
     "conservative": {
-        "high":     [W("lsd90",  "LSD 90min",      "90 דק'", make_lsd_90),
-                     W("z2_60",  "Zone 2 60min",   "60 דק'", make_zone2_60)],
-        "moderate": [W("z2_60",  "Zone 2 60min",   "60 דק'", make_zone2_60),
-                     W("z2_45",  "Zone 2 45min",   "45 דק'", make_zone2_45)],
-        "recovery": [W("z2_45",  "Zone 2 45min",   "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery", "30 דק'", make_active_recovery)],
+        "high":     [W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90),
+                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
+        "moderate": [W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
+                     W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45)],
+        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",   "30 דק'", make_active_recovery)],
     },
     "maintain": {
-        "high":     [W("ss2x20", "Sweet Spot 2×20", "65 דק'", make_sweet_spot_2x20),
-                     W("tmp2x20","Tempo 2×20",      "65 דק'", make_tempo_2x20),
-                     W("ss3x12", "Sweet Spot 3×12", "58 דק'", make_sweet_spot_3x12)],
-        "moderate": [W("tmp40",  "Tempo 40min",     "60 דק'", make_tempo_40),
-                     W("z2_60",  "Zone 2 60min",    "60 דק'", make_zone2_60)],
-        "recovery": [W("z2_45",  "Zone 2 45min",    "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
+        "high":     [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
+                     W("tmp2x20","Tempo 2×20",         "65 דק'", make_tempo_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12)],
+        "moderate": [W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40),
+                     W("z2_60",  "Zone 2 60min",       "60 דק'", make_zone2_60)],
+        "recovery": [W("z2_45",  "Zone 2 45min",       "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",    "30 דק'", make_active_recovery)],
     },
     "general_fitness": {
-        "high":     [W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
-                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12),
-                     W("tmp2x20","Tempo 2×20",        "65 דק'", make_tempo_2x20),
-                     W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12)],
-        "moderate": [W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40),
-                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12)],
-        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
+        "high":     [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12),
+                     W("tmp2x20","Tempo 2×20",         "65 דק'", make_tempo_2x20),
+                     W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12)],
+        "moderate": [W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40),
+                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12)],
+        "recovery": [W("z2_45",  "Zone 2 45min",       "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",       "60 דק'", make_zone2_60)],
     },
     "ftp": {
-        "high":     [W("th2x20", "Threshold 2×20",   "65 דק'", make_threshold_2x20),
-                     W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12),
-                     W("th4x8",  "Threshold 4×8",    "54 דק'", make_threshold_4x8),
-                     W("ou4",    "Over-Under 4×8",   "66 דק'", make_over_under),
-                     W("pyra",   "Pyramid Threshold","78 דק'", make_pyramid_threshold)],
-        "moderate": [W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
-                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12),
-                     W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40)],
-        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
-                     W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90)],
+        "high":     [W("th2x20", "Threshold 2×20",    "65 דק'", make_threshold_2x20),
+                     W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12),
+                     W("th4x8",  "Threshold 4×8",     "54 דק'", make_threshold_4x8),
+                     W("ou4",    "Over-Under 4×8",    "66 דק'", make_over_under),
+                     W("pyra",   "Pyramid Threshold", "78 דק'", make_pyramid_threshold)],
+        "moderate": [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12),
+                     W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40)],
+        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
+                     W("lsd90",  "LSD 90min",         "90 דק'", make_lsd_90)],
     },
     "vo2max": {
-        "high":     [W("v5x5",   "VO2Max 5×5",       "75 דק'", make_vo2_5x5),
-                     W("v4x6",   "VO2Max 4×6",       "71 דק'", make_vo2_4x6),
-                     W("v3030",  "VO2Max 30/30 ×15", "45 דק'", make_vo2_30_30),
-                     W("vmicro", "VO2Max Micro-Burst","55 דק'", make_vo2_micro)],
-        "moderate": [W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12),
-                     W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
-                     W("ou4",    "Over-Under 4×8",   "66 דק'", make_over_under)],
-        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
+        "high":     [W("v5x5",   "VO2Max 5×5",        "75 דק'", make_vo2_5x5),
+                     W("v4x6",   "VO2Max 4×6",        "71 דק'", make_vo2_4x6),
+                     W("v3030",  "VO2Max 30/30 ×15",  "45 דק'", make_vo2_30_30),
+                     W("vmicro", "VO2Max Micro-Burst", "55 דק'", make_vo2_micro)],
+        "moderate": [W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12),
+                     W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
+                     W("ou4",    "Over-Under 4×8",    "66 דק'", make_over_under)],
+        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
     },
     "endurance": {
-        "high":     [W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90),
-                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
-        "moderate": [W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
-                     W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45)],
-        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
+        "high":     [W("lsd90",  "LSD 90min",         "90 דק'", make_lsd_90),
+                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
+        "moderate": [W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
+                     W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45)],
+        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",   "30 דק'", make_active_recovery)],
     },
 }
 
-# Flat lookup: key → workout dict
 WORKOUT_BY_KEY = {
     w["key"]: w
     for plan in WORKOUT_LIBRARY.values()
@@ -389,13 +368,10 @@ PLAN_LABELS = {
     "endurance":       "Endurance — LSD",
 }
 
-REST_DAY_THRESHOLD = 25
-
 TIER_EMOJI = {"high": "🔵", "moderate": "🟡", "recovery": "🟢", "rest": "😴"}
 TIER_LABEL = {"high": "אימון מטרה", "moderate": "עצימות בינונית",
               "recovery": "התאוששות פעילה", "rest": "יום מנוחה"}
-
-TIER_DOWN = {"high": "moderate", "moderate": "recovery", "recovery": "recovery"}
+TIER_DOWN  = {"high": "moderate", "moderate": "recovery", "recovery": "recovery"}
 
 # =====================================================
 # HISTORY
@@ -413,9 +389,64 @@ def save_history(key: str):
     history = load_history()
     if key not in history:
         history.append(key)
-    history = history[-HISTORY_LENGTH:]
     with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f)
+        json.dump(history[-HISTORY_LENGTH:], f)
+
+# =====================================================
+# FTP TEST TRACKING
+# =====================================================
+
+def get_last_ftp_date() -> dt.date | None:
+    try:
+        d = load_config().get("last_ftp_test")
+        return dt.date.fromisoformat(d) if d else None
+    except Exception:
+        return None
+
+
+def record_ftp_done():
+    c = load_config()
+    c["last_ftp_test"] = dt.date.today().isoformat()
+    save_config(c)
+
+
+def is_ftp_due() -> bool:
+    last = get_last_ftp_date()
+    if last is None:
+        return False  # לא נוודא בפעם הראשונה
+    return (dt.date.today() - last).days >= FTP_REMINDER_WEEKS * 7
+
+# =====================================================
+# CONSECUTIVE TRAINING DAYS
+# =====================================================
+
+def get_recent_cycling_dates(days: int = 10) -> set:
+    """Returns set of dates with completed cycling activities."""
+    try:
+        activities = client.get_activities(0, 30)
+        cutoff     = dt.date.today() - dt.timedelta(days=days)
+        dates      = set()
+        for act in activities:
+            type_key = act.get("activityType", {}).get("typeKey", "")
+            if "cycling" in type_key or "mountain_biking" in type_key:
+                start = act.get("startTimeLocal", "")[:10]
+                d = dt.date.fromisoformat(start)
+                if d >= cutoff:
+                    dates.add(d)
+        return dates
+    except Exception:
+        return set()
+
+
+def get_consecutive_training_days() -> int:
+    """Count consecutive cycling days ending yesterday."""
+    cycling_dates = get_recent_cycling_dates()
+    count         = 0
+    check         = dt.date.today() - dt.timedelta(days=1)
+    while check in cycling_dates:
+        count += 1
+        check -= dt.timedelta(days=1)
+    return count
 
 # =====================================================
 # METRICS
@@ -461,7 +492,7 @@ def get_metrics() -> dict:
     return {"score": max(0, min(100, score)), "hrv": hrv, "sleep": sleep_score, "load": load}
 
 # =====================================================
-# PICK WORKOUT
+# PICK WORKOUTS
 # =====================================================
 
 def get_tier(score: int) -> str:
@@ -471,43 +502,46 @@ def get_tier(score: int) -> str:
 
 
 def pick_from_tier(plan_key: str, tier: str, exclude_keys: list) -> dict:
-    """Pick a random workout from a tier, avoiding recent history and excluded keys."""
-    options  = WORKOUT_LIBRARY[plan_key][tier]
-    history  = load_history()
-    fresh    = [w for w in options if w["key"] not in history and w["key"] not in exclude_keys]
-    pool     = fresh if fresh else [w for w in options if w["key"] not in exclude_keys]
+    options = WORKOUT_LIBRARY[plan_key][tier]
+    history = load_history()
+    fresh   = [w for w in options if w["key"] not in history and w["key"] not in exclude_keys]
+    pool    = fresh if fresh else [w for w in options if w["key"] not in exclude_keys]
     return random.choice(pool if pool else options)
 
 
 def choose_two_workouts(plan_key: str, score: int):
-    """
-    Returns (intensive, conservative) workout dicts, or (None, None) if rest day.
-    intensive  = current tier
-    conservative = one tier lower
-    """
+    """Returns (intensive, conservative, tier, rest_reason)."""
+    # יום מנוחה — ציון נמוך
     if score < REST_DAY_THRESHOLD:
-        return None, None
+        return None, None, "rest", "score"
+
+    # יום מנוחה — שלושה ימי אימון רצופים
+    consecutive = get_consecutive_training_days()
+    if consecutive >= CONSECUTIVE_REST_THRESHOLD:
+        return None, None, "rest", f"consecutive_{consecutive}"
 
     tier      = get_tier(score)
     tier_cons = TIER_DOWN[tier]
-
     intensive    = pick_from_tier(plan_key, tier, [])
     conservative = pick_from_tier(plan_key, tier_cons, [intensive["key"]])
-
-    return intensive, conservative
+    return intensive, conservative, tier, None
 
 # =====================================================
 # GARMIN UPLOAD + SCHEDULE
 # =====================================================
 
 def upload_and_schedule(workout_key: str) -> str:
-    """Upload workout to Garmin and schedule for today. Returns workout name."""
+    """Upload, schedule, then delete from library. Returns workout name."""
     w       = WORKOUT_BY_KEY[workout_key]
     workout = w["fn"]()
     result  = client.upload_cycling_workout(workout)
     wid     = result.get("workoutId") or result.get("workout", {}).get("workoutId")
     today   = dt.date.today().strftime("%Y-%m-%d")
     client.schedule_workout(wid, today)
+    try:
+        client.delete_workout(wid)  # מנקה את הספרייה
+    except Exception:
+        pass  # לא קריטי אם המחיקה נכשלת
     save_history(workout_key)
     return w["name"]
 
@@ -517,12 +551,24 @@ def upload_and_schedule(workout_key: str) -> str:
 
 async def send_daily_recommendation(app):
     global GOAL
-    metrics             = get_metrics()
-    score               = metrics["score"]
-    intensive, conservative = choose_two_workouts(GOAL, score)
+    metrics = get_metrics()
+    score   = metrics["score"]
+    intensive, conservative, tier, rest_reason = choose_two_workouts(GOAL, score)
     score_bar = "█" * (score // 10) + "░" * (10 - score // 10)
 
+    # --- יום מנוחה ---
     if intensive is None:
+        if rest_reason and rest_reason.startswith("consecutive_"):
+            days = rest_reason.split("_")[1]
+            rest_text = f"רכבת {days} ימים ברצף — הגוף שלך צריך לנוח."
+        else:
+            rest_text = "הגוף שלך צריך לנוח."
+
+        # בדיקת FTP
+        ftp_note = ""
+        if is_ftp_due():
+            ftp_note = "\n\n💡 FTP Test מומלץ מחר!\nאחרי יום מנוחה תגיע בכוחות מלאים.\nהשתמש ב /ftpdone לאחר הטסט."
+
         await app.bot.send_message(
             chat_id=CHAT_ID,
             text=(
@@ -530,12 +576,16 @@ async def send_daily_recommendation(app):
                 f"יום מנוחה מומלץ היום\n\n"
                 f"ציון: {score}/100\n{score_bar}\n\n"
                 f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
-                f"הגוף שלך צריך לנוח."
+                f"{rest_text}{ftp_note}"
             )
         )
         return
 
-    tier = get_tier(score)
+    # בדיקת FTP ביום רגיל (tier recovery = יום קל = מחר אפשר טסט)
+    ftp_note = ""
+    if is_ftp_due() and tier == "recovery":
+        ftp_note = "\n\n💡 FTP Test מומלץ מחר — אחרי יום התאוששות תגיע בכוחות מלאים.\n/ftpdone לאחר הטסט."
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"💪 {intensive['name']}",    callback_data=f"upload_{intensive['key']}"),
@@ -554,9 +604,37 @@ async def send_daily_recommendation(app):
             f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
             f"💪 אינטנסיבי:  {intensive['name']} ({intensive['dur']})\n"
             f"🌿 שמרני:      {conservative['name']} ({conservative['dur']})\n\n"
-            f"באיזה אימון להתחיל?"
+            f"באיזה אימון להתחיל?{ftp_note}"
         ),
         reply_markup=keyboard,
+    )
+
+# =====================================================
+# WEEKLY SUMMARY JOB (ראשון בבוקר)
+# =====================================================
+
+async def weekly_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    global GOAL
+    cycling_dates = get_recent_cycling_dates(7)
+    count         = len(cycling_dates)
+
+    day_names = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי",
+                 4: "שישי", 5: "שבת", 6: "ראשון"}
+    days_str  = ", ".join(day_names[d.weekday()] for d in sorted(cycling_dates)) or "לא נמצאו"
+
+    bars  = "🟢" * count + "⬜" * (6 - count)
+    emoji = "🔥" if count >= 5 else "💪" if count >= 3 else "😴"
+
+    await context.application.bot.send_message(
+        chat_id=CHAT_ID,
+        text=(
+            f"📅 סיכום שבועי\n\n"
+            f"אימונים השבוע: {count}/6\n"
+            f"{bars}\n\n"
+            f"ימי רכיבה: {days_str}\n\n"
+            f"תוכנית: {PLAN_LABELS[GOAL]}\n\n"
+            f"{emoji} שבוע חדש מתחיל!"
+        )
     )
 
 # =====================================================
@@ -567,20 +645,25 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
     await send_daily_recommendation(context.application)
 
 # =====================================================
-# COMMAND: /coach
+# COMMANDS
 # =====================================================
 
 async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GOAL
-    metrics             = get_metrics()
-    score               = metrics["score"]
-    intensive, conservative = choose_two_workouts(GOAL, score)
+    metrics = get_metrics()
+    score   = metrics["score"]
+    intensive, conservative, tier, rest_reason = choose_two_workouts(GOAL, score)
 
     if intensive is None:
-        await update.message.reply_text(f"😴 יום מנוחה מומלץ (ציון: {score}/100)")
+        msg = "😴 יום מנוחה מומלץ"
+        if rest_reason and rest_reason.startswith("consecutive_"):
+            days = rest_reason.split("_")[1]
+            msg += f"\n{days} ימי אימון רצופים — תן לגוף לנוח."
+        else:
+            msg += f" (ציון: {score}/100)"
+        await update.message.reply_text(msg)
         return
 
-    tier = get_tier(score)
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"💪 {intensive['name']}",    callback_data=f"upload_{intensive['key']}"),
@@ -588,38 +671,38 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("❌ דלג", callback_data="skip")],
     ])
-
     await update.message.reply_text(
-        f"🚴 Garmin AI Coach\n\n"
-        f"תוכנית: {PLAN_LABELS[GOAL]}\n"
+        f"🚴 {PLAN_LABELS[GOAL]}\n"
         f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]} | ציון: {score}/100\n\n"
         f"💪 {intensive['name']} ({intensive['dur']})\n"
         f"🌿 {conservative['name']} ({conservative['dur']})",
         reply_markup=keyboard,
     )
 
-# =====================================================
-# COMMAND: /status
-# =====================================================
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GOAL
-    metrics   = get_metrics()
-    score     = metrics["score"]
-    score_bar = "█" * (score // 10) + "░" * (10 - score // 10)
-    tier      = get_tier(score) if score >= REST_DAY_THRESHOLD else "rest"
+    metrics     = get_metrics()
+    score       = metrics["score"]
+    score_bar   = "█" * (score // 10) + "░" * (10 - score // 10)
+    consecutive = get_consecutive_training_days()
+    tier        = get_tier(score) if score >= REST_DAY_THRESHOLD else "rest"
+
+    ftp_note = ""
+    if is_ftp_due():
+        last = get_last_ftp_date()
+        weeks_ago = (dt.date.today() - last).days // 7 if last else 0
+        ftp_note = f"\n\n💡 FTP Test לא עודכן זה {weeks_ago} שבועות — כדאי לתזמן."
 
     await update.message.reply_text(
         f"📊 סטטוס נוכחי\n\n"
         f"תוכנית: {PLAN_LABELS[GOAL]}\n\n"
         f"ציון: {score}/100\n{score_bar}\n\n"
         f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
-        f"{TIER_EMOJI[tier]} אימון צפוי: {TIER_LABEL[tier]}"
+        f"ימי אימון רצופים: {consecutive}\n"
+        f"{TIER_EMOJI[tier]} אימון צפוי: {TIER_LABEL[tier]}{ftp_note}"
     )
 
-# =====================================================
-# COMMAND: /setplan
-# =====================================================
 
 async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
@@ -635,8 +718,16 @@ async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard,
     )
 
+
+async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    record_ftp_done()
+    next_date = dt.date.today() + dt.timedelta(weeks=FTP_REMINDER_WEEKS)
+    await update.message.reply_text(
+        f"✅ FTP Test נרשם!\n\nתזכורת הבאה: {next_date.strftime('%d/%m/%Y')} (בעוד {FTP_REMINDER_WEEKS} שבועות)"
+    )
+
 # =====================================================
-# BUTTONS
+# BUTTON HANDLER
 # =====================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,19 +736,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # ---- Plan change ----
     if data.startswith("plan_"):
         new_plan = data.replace("plan_", "")
         if new_plan not in WORKOUT_LIBRARY:
             await query.edit_message_text("❌ תוכנית לא מוכרת.")
             return
         GOAL = new_plan
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump({"plan": GOAL}, f)
+        c = load_config()
+        c["plan"] = GOAL
+        save_config(c)
         await query.edit_message_text(f"✅ תוכנית עודכנה!\n\n{PLAN_LABELS[GOAL]}")
         return
 
-    # ---- Upload & schedule workout ----
     if data.startswith("upload_"):
         key = data.replace("upload_", "")
         if key not in WORKOUT_BY_KEY:
@@ -671,10 +761,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ שגיאה: {e}")
         return
 
-    # ---- Skip ----
     if data == "skip":
         await query.edit_message_text("Workout skipped.")
-        return
 
 # =====================================================
 # POST INIT
@@ -685,13 +773,24 @@ async def post_init(app: Application):
         BotCommand("coach",   "🚴 קבל המלצת אימון עכשיו"),
         BotCommand("status",  "📊 הצג מצב ומדדים נוכחיים"),
         BotCommand("setplan", "📋 שנה תוכנית אימון"),
+        BotCommand("ftpdone", "✅ עדכן שעשית FTP Test"),
     ])
+
+    # הודעה יומית ב-8:00 ימים א'-ו' (לא שבת)
     app.job_queue.run_daily(
         daily_job,
         time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ),
         days=(0, 1, 2, 3, 4, 6),
     )
-    print("Scheduled daily job at 08:00 Israel time")
+
+    # סיכום שבועי ב-9:00 ביום ראשון
+    app.job_queue.run_daily(
+        weekly_summary_job,
+        time=dt.time(hour=9, minute=0, tzinfo=ISRAEL_TZ),
+        days=(6,),  # ראשון בלבד
+    )
+
+    print("Scheduled: daily job 08:00, weekly summary Sunday 09:00")
 
 # =====================================================
 # MAIN
@@ -707,6 +806,7 @@ def main():
     app.add_handler(CommandHandler("coach",   coach_command))
     app.add_handler(CommandHandler("status",  status_command))
     app.add_handler(CommandHandler("setplan", setplan_command))
+    app.add_handler(CommandHandler("ftpdone", ftpdone_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     print("Telegram bot started")
     app.run_polling()
