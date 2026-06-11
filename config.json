@@ -1,1 +1,5 @@
-{"plan": "ftp", "last_ftp_test": null}
+{
+  "plan": "ftp",
+  "last_ftp_test": null,
+  "plan_start_date": "2026-06-11"
+}

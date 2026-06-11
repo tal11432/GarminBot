@@ -45,11 +45,11 @@ CHAT_ID       = os.getenv("CHAT_ID")
 ISRAEL_TZ     = ZoneInfo("Asia/Jerusalem")
 GARMIN_TOKENS = "garmin_tokens.json"
 HISTORY_FILE  = "history.json"
-HISTORY_LENGTH = 7
-
-CONSECUTIVE_REST_THRESHOLD = 3   # ימי אימון רצופים לפני מנוחה כפויה
-FTP_REMINDER_WEEKS         = 8   # כל כמה שבועות להזכיר FTP test
-REST_DAY_THRESHOLD         = 25
+HISTORY_LENGTH         = 7
+CONSECUTIVE_REST_THRESHOLD = 3
+FTP_REMINDER_WEEKS     = 8
+REST_DAY_THRESHOLD     = 25
+SCHEDULED_TODAY_FILE   = "scheduled_today.json"
 
 if not EMAIL or not PASSWORD:
     raise ValueError("Missing Garmin credentials")
@@ -61,11 +61,9 @@ def load_config() -> dict:
     with open("config.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def save_config(data: dict):
     with open("config.json", "w", encoding="utf-8") as f:
         json.dump(data, f)
-
 
 CONFIG = load_config()
 GOAL   = CONFIG.get("plan", "ftp")
@@ -94,7 +92,6 @@ client = garmin_connect()
 
 CYCLING_SPORT = {"sportTypeId": 2, "sportTypeKey": "cycling"}
 
-
 def pz(zone_num: int) -> dict:
     return {
         "workoutTargetTypeId": TargetType.POWER,
@@ -104,25 +101,21 @@ def pz(zone_num: int) -> dict:
         "targetValueTwo": zone_num,
     }
 
-
 def pz_step(base_step: ExecutableStep, zone_num: int) -> ExecutableStep:
     d = base_step.model_dump()
-    d["targetType"]    = pz(zone_num)
+    d["targetType"]     = pz(zone_num)
     d["targetValueOne"] = zone_num
     d["targetValueTwo"] = zone_num
     return ExecutableStep(**d)
 
-
 def seg(steps) -> WorkoutSegment:
     return WorkoutSegment(segmentOrder=1, sportType=CYCLING_SPORT, workoutSteps=steps)
-
 
 def ride(name: str, total_secs: int, steps) -> CyclingWorkout:
     return CyclingWorkout(workoutName=name, estimatedDurationInSecs=total_secs,
                           workoutSegments=[seg(steps)])
 
-
-# ---- FTP / THRESHOLD ----
+# ---- THRESHOLD ----
 def make_threshold_2x20():
     return ride("Threshold 2×20", 3900, [
         pz_step(create_warmup_step(600, 1),    2),
@@ -256,6 +249,43 @@ def make_vo2_micro():
         pz_step(create_cooldown_step(600, 3), 2),
     ])
 
+# ---- MTB ----
+def make_mtb_race_sim():
+    """סימולציית מרוץ MTB — 3 'עליות' עם עצימות משתנה."""
+    return ride("MTB Race Simulation", 4200, [
+        pz_step(create_warmup_step(600, 1), 2),
+        create_repeat_group(3, [
+            pz_step(create_interval_step(120, 1), 6),
+            pz_step(create_recovery_step(90,  2), 2),
+            pz_step(create_interval_step(180, 3), 5),
+            pz_step(create_recovery_step(120, 4), 1),
+        ], step_order=2),
+        pz_step(create_cooldown_step(600, 3), 2),
+    ])
+
+def make_mtb_explosive():
+    """אינטרוולים קצרים ונפיצים לXCO — Zone 6 sprints."""
+    return ride("MTB Explosive 8×45s", 3000, [
+        pz_step(create_warmup_step(900, 1), 2),
+        create_repeat_group(8, [
+            pz_step(create_interval_step(45,  1), 6),
+            pz_step(create_recovery_step(75,  2), 1),
+        ], step_order=2),
+        pz_step(create_cooldown_step(600, 3), 2),
+    ])
+
+def make_mtb_threshold_climb():
+    """אינטרוולי עלייה לMTB — Threshold עם sprints."""
+    return ride("MTB Climb Intervals 4×6", 4200, [
+        pz_step(create_warmup_step(900, 1), 2),
+        create_repeat_group(4, [
+            pz_step(create_interval_step(300, 1), 4),
+            pz_step(create_interval_step(60,  2), 6),
+            pz_step(create_recovery_step(300, 3), 1),
+        ], step_order=2),
+        pz_step(create_cooldown_step(600, 3), 2),
+    ])
+
 # ---- BASE / RECOVERY ----
 def make_zone2_45():
     return ride("Zone 2 — 45min", 3000, [
@@ -293,62 +323,74 @@ def W(key, name, dur, fn):
 WORKOUT_LIBRARY = {
     "conservative": {
         "high":     [W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90),
-                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
-        "moderate": [W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
-                     W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45)],
-        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery",   "30 דק'", make_active_recovery)],
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
+        "moderate": [W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
+                     W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
     },
     "maintain": {
-        "high":     [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
-                     W("tmp2x20","Tempo 2×20",         "65 דק'", make_tempo_2x20),
-                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12)],
-        "moderate": [W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40),
-                     W("z2_60",  "Zone 2 60min",       "60 דק'", make_zone2_60)],
-        "recovery": [W("z2_45",  "Zone 2 45min",       "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery",    "30 דק'", make_active_recovery)],
+        "high":     [W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
+                     W("tmp2x20","Tempo 2×20",        "65 דק'", make_tempo_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12)],
+        "moderate": [W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
     },
     "general_fitness": {
-        "high":     [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
-                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12),
-                     W("tmp2x20","Tempo 2×20",         "65 דק'", make_tempo_2x20),
-                     W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12)],
-        "moderate": [W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40),
-                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12)],
-        "recovery": [W("z2_45",  "Zone 2 45min",       "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",       "60 דק'", make_zone2_60)],
+        "high":     [W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12),
+                     W("tmp2x20","Tempo 2×20",        "65 דק'", make_tempo_2x20),
+                     W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12)],
+        "moderate": [W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40),
+                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
     },
     "ftp": {
-        "high":     [W("th2x20", "Threshold 2×20",    "65 דק'", make_threshold_2x20),
-                     W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12),
-                     W("th4x8",  "Threshold 4×8",     "54 דק'", make_threshold_4x8),
-                     W("ou4",    "Over-Under 4×8",    "66 דק'", make_over_under),
-                     W("pyra",   "Pyramid Threshold", "78 דק'", make_pyramid_threshold)],
-        "moderate": [W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
-                     W("ss3x12", "Sweet Spot 3×12",   "58 דק'", make_sweet_spot_3x12),
-                     W("tmp40",  "Tempo 40min",        "60 דק'", make_tempo_40)],
-        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
-                     W("lsd90",  "LSD 90min",         "90 דק'", make_lsd_90)],
+        "high":     [W("th2x20", "Threshold 2×20",   "65 דק'", make_threshold_2x20),
+                     W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12),
+                     W("th4x8",  "Threshold 4×8",    "54 דק'", make_threshold_4x8),
+                     W("ou4",    "Over-Under 4×8",   "66 דק'", make_over_under),
+                     W("pyra",   "Pyramid Threshold","78 דק'", make_pyramid_threshold)],
+        "moderate": [W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
+                     W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12),
+                     W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
+                     W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90)],
     },
     "vo2max": {
-        "high":     [W("v5x5",   "VO2Max 5×5",        "75 דק'", make_vo2_5x5),
-                     W("v4x6",   "VO2Max 4×6",        "71 דק'", make_vo2_4x6),
-                     W("v3030",  "VO2Max 30/30 ×15",  "45 דק'", make_vo2_30_30),
-                     W("vmicro", "VO2Max Micro-Burst", "55 דק'", make_vo2_micro)],
-        "moderate": [W("th3x12", "Threshold 3×12",    "62 דק'", make_threshold_3x12),
-                     W("ss2x20", "Sweet Spot 2×20",   "65 דק'", make_sweet_spot_2x20),
-                     W("ou4",    "Over-Under 4×8",    "66 דק'", make_over_under)],
-        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
+        "high":     [W("v5x5",   "VO2Max 5×5",       "75 דק'", make_vo2_5x5),
+                     W("v4x6",   "VO2Max 4×6",       "71 דק'", make_vo2_4x6),
+                     W("v3030",  "VO2Max 30/30 ×15", "45 דק'", make_vo2_30_30),
+                     W("vmicro", "VO2Max Micro-Burst","55 דק'", make_vo2_micro)],
+        "moderate": [W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12),
+                     W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20),
+                     W("ou4",    "Over-Under 4×8",   "66 דק'", make_over_under)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
     },
     "endurance": {
-        "high":     [W("lsd90",  "LSD 90min",         "90 דק'", make_lsd_90),
-                     W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60)],
-        "moderate": [W("z2_60",  "Zone 2 60min",      "60 דק'", make_zone2_60),
-                     W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45)],
-        "recovery": [W("z2_45",  "Zone 2 45min",      "45 דק'", make_zone2_45),
-                     W("arec",   "Active Recovery",   "30 דק'", make_active_recovery)],
+        "high":     [W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
+        "moderate": [W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
+                     W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
+    },
+    "mtb": {
+        "high":     [W("mtbrace","MTB Race Sim",      "70 דק'", make_mtb_race_sim),
+                     W("v3030",  "VO2Max 30/30 ×15", "45 דק'", make_vo2_30_30),
+                     W("vmicro", "VO2Max Micro-Burst","55 דק'", make_vo2_micro),
+                     W("mtbexp", "MTB Explosive 8×45","50 דק'", make_mtb_explosive),
+                     W("mtbclmb","MTB Climb 4×6",    "70 דק'", make_mtb_threshold_climb)],
+        "moderate": [W("ou4",    "Over-Under 4×8",   "66 דק'", make_over_under),
+                     W("th3x12", "Threshold 3×12",   "62 דק'", make_threshold_3x12),
+                     W("ss2x20", "Sweet Spot 2×20",  "65 דק'", make_sweet_spot_2x20)],
+        "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
+                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60)],
     },
 }
 
@@ -366,6 +408,7 @@ PLAN_LABELS = {
     "ftp":             "FTP — Threshold Training",
     "vo2max":          "VO2Max — Intervals",
     "endurance":       "Endurance — LSD",
+    "mtb":             "MTB — XCO Race Prep",
 }
 
 TIER_EMOJI = {"high": "🔵", "moderate": "🟡", "recovery": "🟢", "rest": "😴"}
@@ -384,7 +427,6 @@ def load_history() -> list:
     except Exception:
         return []
 
-
 def save_history(key: str):
     history = load_history()
     if key not in history:
@@ -392,13 +434,9 @@ def save_history(key: str):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history[-HISTORY_LENGTH:], f)
 
-
 # =====================================================
-# SCHEDULED TODAY — מניעת Double Booking
+# SCHEDULED TODAY
 # =====================================================
-
-SCHEDULED_TODAY_FILE = "scheduled_today.json"
-
 
 def get_scheduled_today() -> dict | None:
     try:
@@ -410,19 +448,16 @@ def get_scheduled_today() -> dict | None:
     except Exception:
         return None
 
-
 def save_scheduled_today(key: str, name: str):
     with open(SCHEDULED_TODAY_FILE, "w") as f:
         json.dump({"date": dt.date.today().isoformat(), "key": key, "name": name}, f)
 
-
 # =====================================================
-# AUTHORIZATION — רק הבעלים יכול לשלוט בבוט
+# AUTHORIZATION
 # =====================================================
 
 def is_authorized(update: Update) -> bool:
     return str(update.effective_chat.id) == CHAT_ID
-
 
 # =====================================================
 # FTP TEST TRACKING
@@ -435,25 +470,35 @@ def get_last_ftp_date() -> dt.date | None:
     except Exception:
         return None
 
-
 def record_ftp_done():
     c = load_config()
     c["last_ftp_test"] = dt.date.today().isoformat()
     save_config(c)
 
-
 def is_ftp_due() -> bool:
     last = get_last_ftp_date()
     if last is None:
-        return False  # לא נוודא בפעם הראשונה
+        return False
     return (dt.date.today() - last).days >= FTP_REMINDER_WEEKS * 7
 
 # =====================================================
-# CONSECUTIVE TRAINING DAYS
+# DELOAD WEEK
+# =====================================================
+
+def is_deload_week() -> bool:
+    """כל 4 שבועות — שבוע deload אוטומטי."""
+    start_str = load_config().get("plan_start_date")
+    if not start_str:
+        return False
+    start   = dt.date.fromisoformat(start_str)
+    weeks   = (dt.date.today() - start).days // 7
+    return weeks > 0 and weeks % 4 == 3  # שבועות 3, 7, 11... (0-indexed)
+
+# =====================================================
+# ACTIVITY TRACKING
 # =====================================================
 
 def get_recent_cycling_dates(days: int = 10) -> set:
-    """Returns set of dates with completed cycling activities."""
     try:
         activities = client.get_activities(0, 30)
         cutoff     = dt.date.today() - dt.timedelta(days=days)
@@ -469,69 +514,187 @@ def get_recent_cycling_dates(days: int = 10) -> set:
     except Exception:
         return set()
 
-
 def get_consecutive_training_days() -> int:
-    """Count consecutive cycling days ending yesterday."""
     cycling_dates = get_recent_cycling_dates()
-    count         = 0
-    check         = dt.date.today() - dt.timedelta(days=1)
+    count = 0
+    check = dt.date.today() - dt.timedelta(days=1)
     while check in cycling_dates:
         count += 1
         check -= dt.timedelta(days=1)
     return count
 
+def had_hard_ride_yesterday() -> bool:
+    """בדיקה גסה — אם יש אקטיביות רכיבה אתמול."""
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    return yesterday in get_recent_cycling_dates(3)
+
 # =====================================================
-# METRICS
+# METRICS + TRAINING READINESS ALGORITHM
 # =====================================================
 
 def get_metrics() -> dict:
     today = dt.date.today().strftime("%Y-%m-%d")
-    score = 50
-    hrv = sleep_score = load = None
+    raw   = {}
 
+    # --- HRV ---
     try:
-        hrv_data     = client.get_hrv_data(today)
-        hrv          = hrv_data["hrvSummary"]["lastNightAvg"]
-        baseline_low = hrv_data["hrvSummary"]["baseline"]["balancedLow"]
-        if hrv_data["hrvSummary"]["status"] == "BALANCED":
-            score += 10
-        if hrv < baseline_low:
-            score -= 20
+        hrv_data            = client.get_hrv_data(today)
+        raw["hrv"]          = hrv_data["hrvSummary"]["lastNightAvg"]
+        raw["hrv_baseline"] = hrv_data["hrvSummary"]["baseline"]["balancedLow"]
+        raw["hrv_status"]   = hrv_data["hrvSummary"]["status"]
     except Exception:
         pass
 
+    # --- Sleep ---
     try:
-        sleep       = client.get_sleep_data(today)
-        sleep_score = sleep["dailySleepDTO"]["sleepScores"]["overall"]["value"]
-        if sleep_score >= 85:
-            score += 15
-        elif sleep_score < 60:
-            score -= 15
+        sleep_data         = client.get_sleep_data(today)
+        dto                = sleep_data["dailySleepDTO"]
+        raw["sleep_score"] = dto["sleepScores"]["overall"]["value"]
+        raw["sleep_hours"] = round(dto.get("sleepTimeSeconds", 0) / 3600, 1)
     except Exception:
         pass
 
+    # --- Body Battery ---
+    try:
+        bb_list = client.get_body_battery(today)
+        if bb_list:
+            vals = [e.get("charged", 0) for e in bb_list if e.get("charged")]
+            if vals:
+                raw["body_battery"] = max(vals)
+    except Exception:
+        pass
+
+    # --- Training Status + Load + Recovery Time ---
     try:
         ts     = client.get_training_status(today)
         device = list(ts["mostRecentTrainingStatus"]["latestTrainingStatusData"].values())[0]
-        load   = device["acuteTrainingLoadDTO"]["dailyTrainingLoadAcute"]
-        if load > 150:
-            score -= 20
-        elif load < 80:
-            score += 10
+
+        raw["load"] = device["acuteTrainingLoadDTO"]["dailyTrainingLoadAcute"]
+
+        status_dto = device.get("trainingStatusDTO", {})
+        raw["training_status"] = status_dto.get("trainingStatusPhrase", "")
+
+        recovery_dto = device.get("recoveryTimeDTO", {})
+        raw["recovery_hours"] = recovery_dto.get("timeToOptimalRecovery", 0)
     except Exception:
         pass
 
-    return {"score": max(0, min(100, score)), "hrv": hrv, "sleep": sleep_score, "load": load}
+    # --- Resting HR ---
+    try:
+        rhr_data   = client.get_rhr_data(today)
+        metrics_map = rhr_data.get("allMetrics", {}).get("metricsMap", {})
+        rhr_vals   = metrics_map.get("WELLNESS_RESTING_HEART_RATE", [])
+        if rhr_vals:
+            current_rhr     = rhr_vals[-1]["value"]
+            avg_rhr         = sum(v["value"] for v in rhr_vals) / len(rhr_vals)
+            raw["rhr"]      = current_rhr
+            raw["rhr_delta"] = round(current_rhr - avg_rhr, 1)
+    except Exception:
+        pass
+
+    # --- Yesterday's ride ---
+    raw["rode_yesterday"] = had_hard_ride_yesterday()
+
+    # --- Calculate readiness score ---
+    raw["score"] = calculate_readiness_score(raw)
+    return raw
+
+
+def calculate_readiness_score(m: dict) -> int:
+    """
+    אלגוריתם Training Readiness מותאם אישית.
+    מבוסס על 9 מדדים, ציון 0-100.
+    """
+    score = 50
+
+    # Body Battery (0–100)
+    bb = m.get("body_battery")
+    if bb is not None:
+        if   bb >= 75: score += 15
+        elif bb >= 50: score += 7
+        elif bb >= 30: score -= 7
+        else:          score -= 15
+
+    # HRV Status
+    hrv_status = m.get("hrv_status", "").upper()
+    hrv        = m.get("hrv")
+    baseline   = m.get("hrv_baseline")
+    if   hrv_status == "BALANCED":               score += 15
+    elif hrv_status == "UNBALANCED":             score -= 10
+    elif hrv_status in ("POOR", "LOW", "ALERT"): score -= 15
+    # בונוס/עונש נוסף לפי ערך מול בייסליין
+    if hrv and baseline:
+        if   hrv > baseline * 1.05: score += 5
+        elif hrv < baseline * 0.95: score -= 5
+
+    # Recovery Time (שעות שנותרו)
+    rec = m.get("recovery_hours", 0)
+    if   rec == 0:   score += 10
+    elif rec <= 18:  score += 5
+    elif rec <= 36:  score += 0
+    elif rec <= 54:  score -= 10
+    else:            score -= 15
+
+    # Sleep Score
+    sl = m.get("sleep_score")
+    if sl is not None:
+        if   sl >= 85: score += 15
+        elif sl >= 70: score += 8
+        elif sl >= 55: score += 0
+        elif sl >= 40: score -= 8
+        else:          score -= 15
+
+    # Sleep Duration (שעות)
+    sh = m.get("sleep_hours")
+    if sh is not None:
+        if   sh >= 8: score += 10
+        elif sh >= 7: score += 5
+        elif sh >= 6: score += 0
+        elif sh >= 5: score -= 5
+        else:         score -= 10
+
+    # Training Status
+    ts_map = {
+        "PRODUCTIVE": 10, "PEAKING": 8, "MAINTAINING": 5,
+        "RECOVERY": 0, "UNPRODUCTIVE": -5, "DETRAINING": -5,
+        "OVERREACHING": -15
+    }
+    ts = m.get("training_status", "").upper()
+    score += ts_map.get(ts, 0)
+
+    # Acute Training Load
+    load = m.get("load")
+    if load is not None:
+        if   load < 60:  score += 10
+        elif load < 100: score += 5
+        elif load < 150: score += 0
+        elif load < 200: score -= 10
+        else:            score -= 15
+
+    # Yesterday's ride
+    if m.get("rode_yesterday"):
+        score -= 10
+    else:
+        score += 10
+
+    # Resting HR delta vs 7-day avg
+    rhr_d = m.get("rhr_delta")
+    if rhr_d is not None:
+        if   rhr_d <= -3: score += 5
+        elif rhr_d <= 3:  score += 0
+        elif rhr_d <= 7:  score -= 5
+        else:             score -= 10
+
+    return max(0, min(100, score))
 
 # =====================================================
 # PICK WORKOUTS
 # =====================================================
 
 def get_tier(score: int) -> str:
-    if score >= 65:   return "high"
+    if   score >= 65: return "high"
     elif score >= 40: return "moderate"
     else:             return "recovery"
-
 
 def pick_from_tier(plan_key: str, tier: str, exclude_keys: list) -> dict:
     options = WORKOUT_LIBRARY[plan_key][tier]
@@ -540,30 +703,31 @@ def pick_from_tier(plan_key: str, tier: str, exclude_keys: list) -> dict:
     pool    = fresh if fresh else [w for w in options if w["key"] not in exclude_keys]
     return random.choice(pool if pool else options)
 
-
 def choose_two_workouts(plan_key: str, score: int):
     """Returns (intensive, conservative, tier, rest_reason)."""
-    # יום מנוחה — ציון נמוך
     if score < REST_DAY_THRESHOLD:
         return None, None, "rest", "score"
 
-    # יום מנוחה — שלושה ימי אימון רצופים
     consecutive = get_consecutive_training_days()
     if consecutive >= CONSECUTIVE_REST_THRESHOLD:
         return None, None, "rest", f"consecutive_{consecutive}"
 
-    tier      = get_tier(score)
-    tier_cons = TIER_DOWN[tier]
+    # שבוע deload — מוריד לתקרה של recovery
+    deload = is_deload_week()
+    tier   = get_tier(score)
+    if deload:
+        tier = "recovery"
+
+    tier_cons    = TIER_DOWN[tier]
     intensive    = pick_from_tier(plan_key, tier, [])
     conservative = pick_from_tier(plan_key, tier_cons, [intensive["key"]])
-    return intensive, conservative, tier, None
+    return intensive, conservative, tier, "deload" if deload else None
 
 # =====================================================
 # GARMIN UPLOAD + SCHEDULE
 # =====================================================
 
 def upload_and_schedule(workout_key: str) -> str:
-    """Upload, schedule, then delete from library. Returns workout name."""
     w       = WORKOUT_BY_KEY[workout_key]
     workout = w["fn"]()
     result  = client.upload_cycling_workout(workout)
@@ -571,28 +735,57 @@ def upload_and_schedule(workout_key: str) -> str:
     today   = dt.date.today().strftime("%Y-%m-%d")
     client.schedule_workout(wid, today)
     try:
-        client.delete_workout(wid)  # מנקה את הספרייה
+        client.delete_workout(wid)
     except Exception:
-        pass  # לא קריטי אם המחיקה נכשלת
+        pass
     save_history(workout_key)
     save_scheduled_today(workout_key, w["name"])
     return w["name"]
+
+# =====================================================
+# BUILD MESSAGE TEXT
+# =====================================================
+
+def build_metrics_text(m: dict) -> str:
+    lines = []
+
+    bb  = m.get("body_battery")
+    hrv = m.get("hrv")
+    hrv_status = m.get("hrv_status", "")
+    sl  = m.get("sleep_score")
+    sh  = m.get("sleep_hours")
+    rec = m.get("recovery_hours")
+    ts  = m.get("training_status", "")
+    ld  = m.get("load")
+    rhr = m.get("rhr")
+    rhr_d = m.get("rhr_delta")
+
+    if bb  is not None: lines.append(f"🔋 Body Battery:   {bb}/100")
+    if hrv is not None: lines.append(f"💓 HRV:            {hrv}ms ({hrv_status})")
+    if sl  is not None: lines.append(f"😴 שינה:           {sl}/100 ({sh}h)")
+    if rec is not None: lines.append(f"⏱ Recovery Time:  {int(rec)}h")
+    if ts:              lines.append(f"📈 Training Status:{ts}")
+    if ld  is not None: lines.append(f"⚡ Load:            {int(ld)}")
+    if rhr is not None:
+        delta_str = f" ({'+' if rhr_d >= 0 else ''}{rhr_d} vs avg)" if rhr_d is not None else ""
+        lines.append(f"❤️ RHR:            {rhr}bpm{delta_str}")
+
+    return "\n".join(lines) if lines else "לא נמצאו נתונים"
 
 # =====================================================
 # SEND DAILY MESSAGE
 # =====================================================
 
 async def send_daily_recommendation(app):
-    scheduled = get_scheduled_today()
-    if scheduled:
-        return
     global GOAL
+    if get_scheduled_today():
+        return
+
     metrics = get_metrics()
     score   = metrics["score"]
     intensive, conservative, tier, rest_reason = choose_two_workouts(GOAL, score)
     score_bar = "█" * (score // 10) + "░" * (10 - score // 10)
 
-    # --- יום מנוחה ---
     if intensive is None:
         if rest_reason and rest_reason.startswith("consecutive_"):
             days = rest_reason.split("_")[1]
@@ -600,27 +793,19 @@ async def send_daily_recommendation(app):
         else:
             rest_text = "הגוף שלך צריך לנוח."
 
-        # בדיקת FTP
-        ftp_note = ""
-        if is_ftp_due():
-            ftp_note = "\n\n💡 FTP Test מומלץ מחר!\nאחרי יום מנוחה תגיע בכוחות מלאים.\nהשתמש ב /ftpdone לאחר הטסט."
+        ftp_note = "\n\n💡 FTP Test מומלץ מחר!\n/ftpdone לאחר הטסט." if is_ftp_due() else ""
 
-        await app.bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                f"😴 Garmin AI Coach\n\n"
-                f"יום מנוחה מומלץ היום\n\n"
-                f"ציון: {score}/100\n{score_bar}\n\n"
-                f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
-                f"{rest_text}{ftp_note}"
-            )
-        )
+        await app.bot.send_message(chat_id=CHAT_ID, text=(
+            f"😴 Garmin AI Coach\n\n"
+            f"יום מנוחה מומלץ היום\n\n"
+            f"ציון: {score}/100\n{score_bar}\n\n"
+            f"{build_metrics_text(metrics)}\n\n"
+            f"{rest_text}{ftp_note}"
+        ))
         return
 
-    # בדיקת FTP ביום רגיל (tier recovery = יום קל = מחר אפשר טסט)
-    ftp_note = ""
-    if is_ftp_due() and tier == "recovery":
-        ftp_note = "\n\n💡 FTP Test מומלץ מחר — אחרי יום התאוששות תגיע בכוחות מלאים.\n/ftpdone לאחר הטסט."
+    deload_note = "\n🔄 שבוע Deload — אימונים קלים יותר השבוע." if rest_reason == "deload" else ""
+    ftp_note    = "\n\n💡 FTP Test מומלץ מחר — /ftpdone לאחר הטסט." if is_ftp_due() and tier == "recovery" else ""
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -630,48 +815,38 @@ async def send_daily_recommendation(app):
         [InlineKeyboardButton("❌ דלג", callback_data="skip")],
     ])
 
-    await app.bot.send_message(
-        chat_id=CHAT_ID,
-        text=(
-            f"🚴 Garmin AI Coach\n\n"
-            f"תוכנית: {PLAN_LABELS[GOAL]}\n"
-            f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}\n\n"
-            f"ציון: {score}/100\n{score_bar}\n\n"
-            f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
-            f"💪 אינטנסיבי:  {intensive['name']} ({intensive['dur']})\n"
-            f"🌿 שמרני:      {conservative['name']} ({conservative['dur']})\n\n"
-            f"באיזה אימון להתחיל?{ftp_note}"
-        ),
-        reply_markup=keyboard,
-    )
+    await app.bot.send_message(chat_id=CHAT_ID, text=(
+        f"🚴 Garmin AI Coach\n\n"
+        f"תוכנית: {PLAN_LABELS[GOAL]}\n"
+        f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}{deload_note}\n\n"
+        f"ציון: {score}/100\n{score_bar}\n\n"
+        f"{build_metrics_text(metrics)}\n\n"
+        f"💪 אינטנסיבי:  {intensive['name']} ({intensive['dur']})\n"
+        f"🌿 שמרני:      {conservative['name']} ({conservative['dur']})\n\n"
+        f"באיזה אימון להתחיל?{ftp_note}"
+    ), reply_markup=keyboard)
 
 # =====================================================
-# WEEKLY SUMMARY JOB (ראשון בבוקר)
+# WEEKLY SUMMARY JOB
 # =====================================================
 
 async def weekly_summary_job(context: ContextTypes.DEFAULT_TYPE):
     global GOAL
     cycling_dates = get_recent_cycling_dates(7)
     count         = len(cycling_dates)
+    day_names     = {0:"שני",1:"שלישי",2:"רביעי",3:"חמישי",4:"שישי",5:"שבת",6:"ראשון"}
+    days_str      = ", ".join(day_names[d.weekday()] for d in sorted(cycling_dates)) or "לא נמצאו"
+    bars          = "🟢" * count + "⬜" * (6 - count)
+    emoji         = "🔥" if count >= 5 else "💪" if count >= 3 else "😴"
+    deload_note   = "\n🔄 השבוע הבא — שבוע Deload מתוכנן." if is_deload_week() else ""
 
-    day_names = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי",
-                 4: "שישי", 5: "שבת", 6: "ראשון"}
-    days_str  = ", ".join(day_names[d.weekday()] for d in sorted(cycling_dates)) or "לא נמצאו"
-
-    bars  = "🟢" * count + "⬜" * (6 - count)
-    emoji = "🔥" if count >= 5 else "💪" if count >= 3 else "😴"
-
-    await context.application.bot.send_message(
-        chat_id=CHAT_ID,
-        text=(
-            f"📅 סיכום שבועי\n\n"
-            f"אימונים השבוע: {count}/6\n"
-            f"{bars}\n\n"
-            f"ימי רכיבה: {days_str}\n\n"
-            f"תוכנית: {PLAN_LABELS[GOAL]}\n\n"
-            f"{emoji} שבוע חדש מתחיל!"
-        )
-    )
+    await context.application.bot.send_message(chat_id=CHAT_ID, text=(
+        f"📅 סיכום שבועי\n\n"
+        f"אימונים השבוע: {count}/6\n{bars}\n\n"
+        f"ימי רכיבה: {days_str}\n\n"
+        f"תוכנית: {PLAN_LABELS[GOAL]}{deload_note}\n\n"
+        f"{emoji} שבוע חדש מתחיל!"
+    ))
 
 # =====================================================
 # DAILY JOB
@@ -685,8 +860,7 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
-        return
+    if not is_authorized(update): return
     scheduled = get_scheduled_today()
     if scheduled:
         await update.message.reply_text(f"✅ כבר תזמנת אימון היום:\n{scheduled['name']}")
@@ -699,8 +873,7 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intensive is None:
         msg = "😴 יום מנוחה מומלץ"
         if rest_reason and rest_reason.startswith("consecutive_"):
-            days = rest_reason.split("_")[1]
-            msg += f"\n{days} ימי אימון רצופים — תן לגוף לנוח."
+            msg += f"\n{rest_reason.split('_')[1]} ימי אימון רצופים."
         else:
             msg += f" (ציון: {score}/100)"
         await update.message.reply_text(msg)
@@ -713,9 +886,10 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("❌ דלג", callback_data="skip")],
     ])
+    deload_note = " 🔄 Deload" if rest_reason == "deload" else ""
     await update.message.reply_text(
         f"🚴 {PLAN_LABELS[GOAL]}\n"
-        f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]} | ציון: {score}/100\n\n"
+        f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}{deload_note} | ציון: {score}/100\n\n"
         f"💪 {intensive['name']} ({intensive['dur']})\n"
         f"🌿 {conservative['name']} ({conservative['dur']})",
         reply_markup=keyboard,
@@ -723,34 +897,33 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
-        return
+    if not is_authorized(update): return
     global GOAL
     metrics     = get_metrics()
     score       = metrics["score"]
     score_bar   = "█" * (score // 10) + "░" * (10 - score // 10)
     consecutive = get_consecutive_training_days()
     tier        = get_tier(score) if score >= REST_DAY_THRESHOLD else "rest"
+    deload_note = "\n🔄 שבוע Deload פעיל!" if is_deload_week() else ""
 
     ftp_note = ""
     if is_ftp_due():
-        last = get_last_ftp_date()
+        last      = get_last_ftp_date()
         weeks_ago = (dt.date.today() - last).days // 7 if last else 0
-        ftp_note = f"\n\n💡 FTP Test לא עודכן זה {weeks_ago} שבועות — כדאי לתזמן."
+        ftp_note  = f"\n\n💡 FTP Test לא עודכן {weeks_ago} שבועות — כדאי לתזמן."
 
     await update.message.reply_text(
         f"📊 סטטוס נוכחי\n\n"
-        f"תוכנית: {PLAN_LABELS[GOAL]}\n\n"
+        f"תוכנית: {PLAN_LABELS[GOAL]}{deload_note}\n\n"
         f"ציון: {score}/100\n{score_bar}\n\n"
-        f"HRV: {metrics['hrv']}\nשינה: {metrics['sleep']}\nעומס: {metrics['load']}\n\n"
+        f"{build_metrics_text(metrics)}\n\n"
         f"ימי אימון רצופים: {consecutive}\n"
         f"{TIER_EMOJI[tier]} אימון צפוי: {TIER_LABEL[tier]}{ftp_note}"
     )
 
 
 async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
-        return
+    if not is_authorized(update): return
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟦 Conservative",    callback_data="plan_conservative")],
         [InlineKeyboardButton("🟩 Maintain",        callback_data="plan_maintain")],
@@ -758,6 +931,7 @@ async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🟨 FTP",             callback_data="plan_ftp")],
         [InlineKeyboardButton("🟥 VO2Max",          callback_data="plan_vo2max")],
         [InlineKeyboardButton("🌿 Endurance",       callback_data="plan_endurance")],
+        [InlineKeyboardButton("🚵 MTB",             callback_data="plan_mtb")],
     ])
     await update.message.reply_text(
         f"📋 בחר תוכנית אימון\n\nתוכנית נוכחית: {PLAN_LABELS[GOAL]}",
@@ -766,12 +940,11 @@ async def setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
-        return
+    if not is_authorized(update): return
     record_ftp_done()
     next_date = dt.date.today() + dt.timedelta(weeks=FTP_REMINDER_WEEKS)
     await update.message.reply_text(
-        f"✅ FTP Test נרשם!\n\nתזכורת הבאה: {next_date.strftime('%d/%m/%Y')} (בעוד {FTP_REMINDER_WEEKS} שבועות)"
+        f"✅ FTP Test נרשם!\n\nתזכורת הבאה: {next_date.strftime('%d/%m/%Y')}"
     )
 
 # =====================================================
@@ -779,8 +952,7 @@ async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update):
-        return
+    if not is_authorized(update): return
     global GOAL
     query = update.callback_query
     await query.answer()
@@ -792,10 +964,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ תוכנית לא מוכרת.")
             return
         GOAL = new_plan
-        c = load_config()
-        c["plan"] = GOAL
+        c    = load_config()
+        c["plan"]            = GOAL
+        c["plan_start_date"] = dt.date.today().isoformat()
         save_config(c)
-        await query.edit_message_text(f"✅ תוכנית עודכנה!\n\n{PLAN_LABELS[GOAL]}")
+        await query.edit_message_text(f"✅ תוכנית עודכנה!\n\n{PLAN_LABELS[GOAL]}\n\nDeload שבוע 4, 8, 12...")
         return
 
     if data.startswith("upload_"):
@@ -825,34 +998,18 @@ async def post_init(app: Application):
         BotCommand("setplan", "📋 שנה תוכנית אימון"),
         BotCommand("ftpdone", "✅ עדכן שעשית FTP Test"),
     ])
-
-    # הודעה יומית ב-8:00 ימים א'-ו' (לא שבת)
-    app.job_queue.run_daily(
-        daily_job,
-        time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ),
-        days=(0, 1, 2, 3, 4, 6),
-    )
-
-    # סיכום שבועי ב-9:00 ביום ראשון
-    app.job_queue.run_daily(
-        weekly_summary_job,
-        time=dt.time(hour=9, minute=0, tzinfo=ISRAEL_TZ),
-        days=(6,),  # ראשון בלבד
-    )
-
-    print("Scheduled: daily job 08:00, weekly summary Sunday 09:00")
+    app.job_queue.run_daily(daily_job,
+        time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ), days=(0,1,2,3,4,6))
+    app.job_queue.run_daily(weekly_summary_job,
+        time=dt.time(hour=9, minute=0, tzinfo=ISRAEL_TZ), days=(6,))
+    print("Scheduled: daily 08:00, weekly summary Sunday 09:00")
 
 # =====================================================
 # MAIN
 # =====================================================
 
 def main():
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+    app = (Application.builder().token(BOT_TOKEN).post_init(post_init).build())
     app.add_handler(CommandHandler("coach",   coach_command))
     app.add_handler(CommandHandler("status",  status_command))
     app.add_handler(CommandHandler("setplan", setplan_command))
@@ -860,7 +1017,6 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     print("Telegram bot started")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
