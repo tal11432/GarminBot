@@ -2,7 +2,9 @@ import datetime as dt
 import json
 import os
 import random
+import threading
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -730,14 +732,20 @@ def choose_two_workouts(plan_key: str, score: int):
 def upload_and_schedule(workout_key: str) -> str:
     w       = WORKOUT_BY_KEY[workout_key]
     workout = w["fn"]()
-    result  = client.upload_cycling_workout(workout)
-    wid     = result.get("workoutId") or result.get("workout", {}).get("workoutId")
-    today   = dt.date.today().strftime("%Y-%m-%d")
-    client.schedule_workout(wid, today)
-    try:
-        client.delete_workout(wid)
-    except Exception:
-        pass
+
+    result = client.upload_cycling_workout(workout)
+    print(f"Upload result: {result}")  # לדיבוג — נראה ב-Railway logs
+
+    wid = result.get("workoutId") or result.get("workout", {}).get("workoutId")
+    print(f"Extracted workoutId: {wid}")
+
+    today          = dt.date.today().strftime("%Y-%m-%d")
+    schedule_result = client.schedule_workout(wid, today)
+    print(f"Schedule result: {schedule_result}")
+
+    # לא מוחקים את האימון! מחיקה כאן עלולה למחוק בקסקייד גם את
+    # השיבוץ ביומן (ה"schedule" כנראה רק מצביע על ה-workoutId).
+
     save_history(workout_key)
     save_scheduled_today(workout_key, w["name"])
     return w["name"]
@@ -1005,11 +1013,52 @@ async def post_init(app: Application):
     print("Scheduled: daily 08:00, weekly summary Sunday 09:00")
 
 # =====================================================
+# ERROR HANDLER — לוג מסודר של חריגות לא מטופלות
+# =====================================================
+
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"⚠️ Unhandled error: {context.error}")
+    import traceback
+    traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
+
+# =====================================================
+# HEALTH CHECK SERVER (Render free tier requires a port)
+# =====================================================
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, *args):
+        pass  # שתיקה — לא להציף לוגים בכל פינג
+
+
+def start_health_server():
+    port   = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    print(f"Health check server listening on port {port}")
+    server.serve_forever()
+
+# =====================================================
 # MAIN
 # =====================================================
 
 def main():
-    app = (Application.builder().token(BOT_TOKEN).post_init(post_init).build())
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .get_updates_read_timeout(30)
+        .get_updates_connect_timeout(30)
+        .read_timeout(30)
+        .connect_timeout(30)
+        .build()
+    )
+    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("coach",   coach_command))
     app.add_handler(CommandHandler("status",  status_command))
     app.add_handler(CommandHandler("setplan", setplan_command))
