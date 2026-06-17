@@ -96,7 +96,7 @@ CYCLING_SPORT = {"sportTypeId": 2, "sportTypeKey": "cycling"}
 
 def pz(zone_num: int) -> dict:
     return {
-        "workoutTargetTypeId": TargetType.POWER,
+        "workoutTargetTypeId": 2,  # POWER — קבוע, לא תלוי בגרסת garminconnect
         "workoutTargetTypeKey": "power.zone",
         "displayOrder": 1,
         "targetValueOne": zone_num,
