@@ -706,7 +706,11 @@ def pick_from_tier(plan_key: str, tier: str, exclude_keys: list) -> dict:
     return random.choice(pool if pool else options)
 
 def choose_two_workouts(plan_key: str, score: int):
-    """Returns (intensive, conservative, tier, rest_reason)."""
+    """
+    Returns (intensive, conservative, tier, rest_reason).
+    בטיר recovery — אין הבדל אמיתי בין 'אינטנסיבי' ל'שמרני',
+    אז מחזירים המלצה אחת בלבד (conservative=None).
+    """
     if score < REST_DAY_THRESHOLD:
         return None, None, "rest", "score"
 
@@ -714,16 +718,22 @@ def choose_two_workouts(plan_key: str, score: int):
     if consecutive >= CONSECUTIVE_REST_THRESHOLD:
         return None, None, "rest", f"consecutive_{consecutive}"
 
-    # שבוע deload — מוריד לתקרה של recovery
     deload = is_deload_week()
     tier   = get_tier(score)
     if deload:
         tier = "recovery"
 
+    reason = "deload" if deload else None
+
+    # ברמת recovery — אין מקום לבחירה, מציעים אימון אחד בלבד
+    if tier == "recovery":
+        single = pick_from_tier(plan_key, "recovery", [])
+        return single, None, tier, reason
+
     tier_cons    = TIER_DOWN[tier]
     intensive    = pick_from_tier(plan_key, tier, [])
     conservative = pick_from_tier(plan_key, tier_cons, [intensive["key"]])
-    return intensive, conservative, tier, "deload" if deload else None
+    return intensive, conservative, tier, reason
 
 # =====================================================
 # GARMIN UPLOAD + SCHEDULE
@@ -815,6 +825,22 @@ async def send_daily_recommendation(app):
     deload_note = "\n🔄 שבוע Deload — אימונים קלים יותר השבוע." if rest_reason == "deload" else ""
     ftp_note    = "\n\n💡 FTP Test מומלץ מחר — /ftpdone לאחר הטסט." if is_ftp_due() and tier == "recovery" else ""
 
+    # --- מצב המלצה אחת (recovery tier) ---
+    if conservative is None:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ {intensive['name']}", callback_data=f"upload_{intensive['key']}")],
+            [InlineKeyboardButton("❌ דלג", callback_data="skip")],
+        ])
+        await app.bot.send_message(chat_id=CHAT_ID, text=(
+            f"🚴 Garmin AI Coach\n\n"
+            f"תוכנית: {PLAN_LABELS[GOAL]}\n"
+            f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}{deload_note}\n\n"
+            f"ציון: {score}/100\n{score_bar}\n\n"
+            f"{build_metrics_text(metrics)}\n\n"
+            f"אימון מומלץ:\n{intensive['name']} ({intensive['dur']}){ftp_note}"
+        ), reply_markup=keyboard)
+        return
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"💪 {intensive['name']}",    callback_data=f"upload_{intensive['key']}"),
@@ -887,6 +913,22 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
         return
 
+    deload_note = " 🔄 Deload" if rest_reason == "deload" else ""
+
+    # --- מצב המלצה אחת (recovery tier) ---
+    if conservative is None:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ {intensive['name']}", callback_data=f"upload_{intensive['key']}")],
+            [InlineKeyboardButton("❌ דלג", callback_data="skip")],
+        ])
+        await update.message.reply_text(
+            f"🚴 {PLAN_LABELS[GOAL]}\n"
+            f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}{deload_note} | ציון: {score}/100\n\n"
+            f"אימון מומלץ: {intensive['name']} ({intensive['dur']})",
+            reply_markup=keyboard,
+        )
+        return
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"💪 {intensive['name']}",    callback_data=f"upload_{intensive['key']}"),
@@ -894,7 +936,6 @@ async def coach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("❌ דלג", callback_data="skip")],
     ])
-    deload_note = " 🔄 Deload" if rest_reason == "deload" else ""
     await update.message.reply_text(
         f"🚴 {PLAN_LABELS[GOAL]}\n"
         f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}{deload_note} | ציון: {score}/100\n\n"
