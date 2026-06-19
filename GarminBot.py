@@ -360,8 +360,7 @@ WORKOUT_LIBRARY = {
                      W("ss3x12", "Sweet Spot 3×12",  "58 דק'", make_sweet_spot_3x12),
                      W("tmp40",  "Tempo 40min",       "60 דק'", make_tempo_40)],
         "recovery": [W("z2_45",  "Zone 2 45min",     "45 דק'", make_zone2_45),
-                     W("z2_60",  "Zone 2 60min",     "60 דק'", make_zone2_60),
-                     W("lsd90",  "LSD 90min",        "90 דק'", make_lsd_90)],
+                     W("arec",   "Active Recovery",  "30 דק'", make_active_recovery)],
     },
     "vo2max": {
         "high":     [W("v5x5",   "VO2Max 5×5",       "75 דק'", make_vo2_5x5),
@@ -1047,11 +1046,12 @@ async def post_init(app: Application):
         BotCommand("setplan", "📋 שנה תוכנית אימון"),
         BotCommand("ftpdone", "✅ עדכן שעשית FTP Test"),
     ])
+    # PTB v20+: days מתחילים מ-0=ראשון ועד 6=שבת
     app.job_queue.run_daily(daily_job,
-        time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ), days=(0,1,2,3,4,6))
+        time=dt.time(hour=8, minute=0, tzinfo=ISRAEL_TZ), days=(0,1,2,3,4,5))  # א'-ו', לא שבת
     app.job_queue.run_daily(weekly_summary_job,
-        time=dt.time(hour=9, minute=0, tzinfo=ISRAEL_TZ), days=(6,))
-    print("Scheduled: daily 08:00, weekly summary Sunday 09:00")
+        time=dt.time(hour=9, minute=0, tzinfo=ISRAEL_TZ), days=(0,))  # ראשון בלבד
+    print("Scheduled: daily 08:00 (Sun-Fri), weekly summary Sunday 09:00")
 
 # =====================================================
 # ERROR HANDLER — לוג מסודר של חריגות לא מטופלות
