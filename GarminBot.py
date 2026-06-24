@@ -95,19 +95,20 @@ client = garmin_connect()
 CYCLING_SPORT = {"sportTypeId": 2, "sportTypeKey": "cycling"}
 
 def pz(zone_num: int) -> dict:
+    """Power zone targetType — הזון עצמו עובר דרך zoneNumber ב-ExecutableStep."""
     return {
-        "workoutTargetTypeId": 2,  # POWER — קבוע, לא תלוי בגרסת garminconnect
+        "workoutTargetTypeId": 2,
         "workoutTargetTypeKey": "power.zone",
-        "displayOrder": 1,
-        "targetValueOne": zone_num,
-        "targetValueTwo": zone_num,
+        "displayOrder": 2,
     }
 
 def pz_step(base_step: ExecutableStep, zone_num: int) -> ExecutableStep:
+    """Add power zone to a step using the correct Garmin format: zoneNumber field."""
     d = base_step.model_dump()
     d["targetType"]     = pz(zone_num)
-    d["targetValueOne"] = zone_num
-    d["targetValueTwo"] = zone_num
+    d["targetValueOne"] = None
+    d["targetValueTwo"] = None
+    d["zoneNumber"]     = zone_num   # ← הפורמט האמיתי של גרמין
     return ExecutableStep(**d)
 
 def seg(steps) -> WorkoutSegment:
