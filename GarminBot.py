@@ -526,9 +526,28 @@ def get_consecutive_training_days() -> int:
     return count
 
 def had_hard_ride_yesterday() -> bool:
-    """בדיקה גסה — אם יש אקטיביות רכיבה אתמול."""
+    """בדיקה גסה — אם יש אקטיביות רכיבה אתמול (לצורך ספירת ימים רצופים)."""
     yesterday = dt.date.today() - dt.timedelta(days=1)
     return yesterday in get_recent_cycling_dates(3)
+
+
+def get_yesterday_activity() -> dict:
+    """מושך TSS ו-Aerobic TE של רכיבת אתמול אם קיימת."""
+    try:
+        yesterday  = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+        activities = client.get_activities(0, 5)
+        for act in activities:
+            type_key = act.get("activityType", {}).get("typeKey", "")
+            if "cycling" not in type_key and "mountain_biking" not in type_key:
+                continue
+            if act.get("startTimeLocal", "")[:10] == yesterday:
+                return {
+                    "tss": act.get("trainingStressScore"),
+                    "te":  act.get("aerobicTrainingEffect"),
+                }
+    except Exception:
+        pass
+    return {}
 
 # =====================================================
 # METRICS + TRAINING READINESS ALGORITHM
@@ -537,6 +556,18 @@ def had_hard_ride_yesterday() -> bool:
 def get_metrics() -> dict:
     today = dt.date.today().strftime("%Y-%m-%d")
     raw   = {}
+
+    # --- User Summary — Body Battery, RHR, Stress (מקור אמת אחד לכולם) ---
+    try:
+        summary             = client.get_user_summary(today)
+        raw["body_battery"] = summary.get("bodyBatteryAtWakeTime")
+        raw["rhr"]          = summary.get("restingHeartRate")
+        avg_rhr             = summary.get("lastSevenDaysAvgRestingHeartRate")
+        if raw.get("rhr") and avg_rhr:
+            raw["rhr_delta"] = round(raw["rhr"] - avg_rhr, 1)
+        raw["avg_stress"]   = summary.get("averageStressLevel")
+    except Exception:
+        pass
 
     # --- HRV ---
     try:
@@ -556,45 +587,35 @@ def get_metrics() -> dict:
     except Exception:
         pass
 
-    # --- Body Battery ---
-    try:
-        bb_list = client.get_body_battery(today)
-        if bb_list:
-            vals = [e.get("charged", 0) for e in bb_list if e.get("charged")]
-            if vals:
-                raw["body_battery"] = max(vals)
-    except Exception:
-        pass
-
-    # --- Training Status + Load + Recovery Time ---
+    # --- Training Status + Load + VO2Max ---
     try:
         ts     = client.get_training_status(today)
         device = list(ts["mostRecentTrainingStatus"]["latestTrainingStatusData"].values())[0]
 
-        raw["load"] = device["acuteTrainingLoadDTO"]["dailyTrainingLoadAcute"]
+        raw["load"]            = device["acuteTrainingLoadDTO"]["dailyTrainingLoadAcute"]
+        raw["acwr_status"]     = device["acuteTrainingLoadDTO"].get("acwrStatus", "")
+        # השדה האמיתי (לא trainingStatusDTO.trainingStatusPhrase שלא קיים)
+        raw["training_status"] = device.get("trainingStatusFeedbackPhrase", "")
 
-        status_dto = device.get("trainingStatusDTO", {})
-        raw["training_status"] = status_dto.get("trainingStatusPhrase", "")
+        # Recovery Time אם קיים במכשיר
+        recovery_dto = device.get("recoveryTimeDTO") or {}
+        rec = recovery_dto.get("timeToOptimalRecovery")
+        if rec:
+            raw["recovery_hours"] = rec
 
-        recovery_dto = device.get("recoveryTimeDTO", {})
-        raw["recovery_hours"] = recovery_dto.get("timeToOptimalRecovery", 0)
+        # VO2Max
+        cycling_vo2 = ts.get("mostRecentVO2Max", {}).get("cycling", {})
+        if cycling_vo2.get("vo2MaxPreciseValue"):
+            raw["vo2max"] = round(cycling_vo2["vo2MaxPreciseValue"], 1)
     except Exception:
         pass
 
-    # --- Resting HR ---
-    try:
-        rhr_data   = client.get_rhr_data(today)
-        metrics_map = rhr_data.get("allMetrics", {}).get("metricsMap", {})
-        rhr_vals   = metrics_map.get("WELLNESS_RESTING_HEART_RATE", [])
-        if rhr_vals:
-            current_rhr     = rhr_vals[-1]["value"]
-            avg_rhr         = sum(v["value"] for v in rhr_vals) / len(rhr_vals)
-            raw["rhr"]      = current_rhr
-            raw["rhr_delta"] = round(current_rhr - avg_rhr, 1)
-    except Exception:
-        pass
-
-    # --- Yesterday's ride ---
+    # --- Yesterday's activity (TSS + Aerobic TE) ---
+    yesterday_act = get_yesterday_activity()
+    if yesterday_act:
+        raw["yesterday_tss"] = yesterday_act.get("tss")
+        raw["yesterday_te"]  = yesterday_act.get("te")
+    # עדיין צריך את הbool לצורך ספירת ימים רצופים
     raw["rode_yesterday"] = had_hard_ride_yesterday()
 
     # --- Calculate readiness score ---
@@ -673,11 +694,25 @@ def calculate_readiness_score(m: dict) -> int:
         elif load < 200: score -= 10
         else:            score -= 15
 
-    # Yesterday's ride
-    if m.get("rode_yesterday"):
-        score -= 10
+    # Yesterday's TSS
+    tss = m.get("yesterday_tss")
+    if tss is not None:
+        if   tss < 40:  score += 10  # יום קל / מנוחה
+        elif tss < 70:  score += 5   # בינוני
+        elif tss < 100: score += 0   # קשה
+        elif tss < 130: score -= 10  # קשה מאוד
+        else:           score -= 15  # מאמץ קיצוני
     else:
-        score += 10
+        score += 10  # לא היה אימון אתמול
+
+    # Yesterday's Aerobic Training Effect (1–5)
+    te = m.get("yesterday_te")
+    if te is not None:
+        if   te < 2:   score += 5    # recovery / קל מאוד
+        elif te < 3:   score += 0    # שמירה
+        elif te < 3.5: score -= 5    # שיפור
+        elif te < 4:   score -= 8    # שיפור גבוה
+        else:          score -= 12   # עומס גבוה מאוד
 
     # Resting HR delta vs 7-day avg
     rhr_d = m.get("rhr_delta")
@@ -765,28 +800,38 @@ def upload_and_schedule(workout_key: str) -> str:
 # =====================================================
 
 def build_metrics_text(m: dict) -> str:
-    lines = []
+    lines  = []
+    bb     = m.get("body_battery")
+    hrv    = m.get("hrv")
+    hrv_st = m.get("hrv_status", "")
+    sl     = m.get("sleep_score")
+    sh     = m.get("sleep_hours")
+    rec    = m.get("recovery_hours")
+    ts     = m.get("training_status", "")
+    acwr   = m.get("acwr_status", "")
+    ld     = m.get("load")
+    rhr    = m.get("rhr")
+    rhr_d  = m.get("rhr_delta")
+    stress = m.get("avg_stress")
+    vo2    = m.get("vo2max")
 
-    bb  = m.get("body_battery")
-    hrv = m.get("hrv")
-    hrv_status = m.get("hrv_status", "")
-    sl  = m.get("sleep_score")
-    sh  = m.get("sleep_hours")
-    rec = m.get("recovery_hours")
-    ts  = m.get("training_status", "")
-    ld  = m.get("load")
-    rhr = m.get("rhr")
-    rhr_d = m.get("rhr_delta")
-
-    if bb  is not None: lines.append(f"🔋 Body Battery:   {bb}/100")
-    if hrv is not None: lines.append(f"💓 HRV:            {hrv}ms ({hrv_status})")
-    if sl  is not None: lines.append(f"😴 שינה:           {sl}/100 ({sh}h)")
+    if bb     is not None: lines.append(f"🔋 Body Battery:   {bb}/100")
+    if hrv    is not None: lines.append(f"💓 HRV:            {hrv}ms ({hrv_st})")
+    if sl     is not None: lines.append(f"😴 שינה:           {sl}/100 ({sh}h)")
+    tss = m.get("yesterday_tss")
+    te  = m.get("yesterday_te")
     if rec is not None: lines.append(f"⏱ Recovery Time:  {int(rec)}h")
-    if ts:              lines.append(f"📈 Training Status:{ts}")
-    if ld  is not None: lines.append(f"⚡ Load:            {int(ld)}")
-    if rhr is not None:
+    if tss is not None: lines.append(f"📊 TSS אתמול:      {int(tss)}")
+    if te  is not None: lines.append(f"🏋️  TE אתמול:       {te:.1f}/5")
+    if ld     is not None:
+        acwr_str = f" | ACWR: {acwr}" if acwr else ""
+        lines.append(f"⚡ Load:            {int(ld)}{acwr_str}")
+    if ts:                 lines.append(f"📈 Status:         {ts.replace('_', ' ')}")
+    if rhr    is not None:
         delta_str = f" ({'+' if rhr_d >= 0 else ''}{rhr_d} vs avg)" if rhr_d is not None else ""
-        lines.append(f"❤️ RHR:            {rhr}bpm{delta_str}")
+        lines.append(f"❤️  RHR:            {rhr}bpm{delta_str}")
+    if stress is not None: lines.append(f"🧠 Stress:         {stress}/100")
+    if vo2    is not None: lines.append(f"🫁 VO2Max:         {vo2}")
 
     return "\n".join(lines) if lines else "לא נמצאו נתונים"
 
