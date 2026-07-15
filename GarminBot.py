@@ -60,8 +60,19 @@ if not BOT_TOKEN or not CHAT_ID:
 
 
 def load_config() -> dict:
-    with open("config.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open("config.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # קובץ לא קיים (deploy חדש) — טוען מ-Environment Variables
+        cfg = {
+            "plan":            os.getenv("GARMIN_PLAN", "ftp"),
+            "last_ftp_test":   os.getenv("LAST_FTP_TEST"),
+            "plan_start_date": os.getenv("PLAN_START_DATE"),
+        }
+        save_config(cfg)
+        print(f"Config loaded from env: plan={cfg['plan']}")
+        return cfg
 
 def save_config(data: dict):
     with open("config.json", "w", encoding="utf-8") as f:
