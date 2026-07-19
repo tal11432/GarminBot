@@ -4,7 +4,6 @@ import os
 import random
 import threading
 
-
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 
@@ -61,62 +60,23 @@ if not BOT_TOKEN or not CHAT_ID:
 
 
 def load_config() -> dict:
-    # 1. קובץ מקומי (קיים כל עוד הבוט לא נרדם)
     try:
         with open("config.json", "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
-
-    # 2. fallback — קריאה מ-Environment Variables
-    cfg = {
-        "plan":            os.getenv("GARMIN_PLAN", "ftp"),
-        "last_ftp_test":   os.getenv("LAST_FTP_TEST"),
-        "plan_start_date": os.getenv("PLAN_START_DATE"),
-    }
-    save_config(cfg)
-    print(f"Config loaded from env: plan={cfg['plan']}")
-    return cfg
-
+        # קובץ לא קיים (deploy חדש) — טוען מ-Environment Variables
+        cfg = {
+            "plan":            os.getenv("GARMIN_PLAN", "ftp"),
+            "last_ftp_test":   os.getenv("LAST_FTP_TEST"),
+            "plan_start_date": os.getenv("PLAN_START_DATE"),
+        }
+        save_config(cfg)
+        print(f"Config loaded from env: plan={cfg['plan']}")
+        return cfg
 
 def save_config(data: dict):
-    # שמור לקובץ מקומי
-    try:
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
-
-    # עדכן גם את GARMIN_PLAN ב-Render — עמיד בין restarts
-    _update_render_env("GARMIN_PLAN",      data.get("plan", "ftp"))
-    _update_render_env("LAST_FTP_TEST",    data.get("last_ftp_test") or "")
-    _update_render_env("PLAN_START_DATE",  data.get("plan_start_date") or "")
-
-
-def _update_render_env(key: str, value: str):
-    """מעדכן env var ב-Render דרך ה-API שלהם."""
-    api_key    = os.getenv("RENDER_API_KEY")
-    service_id = os.getenv("RENDER_SERVICE_ID")
-    if not api_key or not service_id:
-        return  # לא ב-Render, לא צריך
-
-    try:
-        import urllib.request
-        url     = f"https://api.render.com/v1/services/{service_id}/env-vars"
-        payload = json.dumps([{"key": key, "value": value}]).encode()
-        req     = urllib.request.Request(
-            url,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type":  "application/json",
-            },
-            method="PUT",
-        )
-        urllib.request.urlopen(req, timeout=5)
-        print(f"Render env updated: {key}={value}")
-    except Exception as e:
-        print(f"Render env update failed ({key}): {e}")
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
 
 CONFIG = load_config()
 GOAL   = CONFIG.get("plan", "ftp")
@@ -1093,6 +1053,114 @@ async def ftpdone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =====================================================
+# FTP ESTIMATOR
+# =====================================================
+
+_PDC_FIELDS = {
+    1: "maxAvgPower_1", 2: "maxAvgPower_2", 5: "maxAvgPower_5",
+    10: "maxAvgPower_10", 20: "maxAvgPower_20", 30: "maxAvgPower_30",
+    60: "maxAvgPower_60", 120: "maxAvgPower_120", 300: "maxAvgPower_300",
+    600: "maxAvgPower_600", 1200: "maxAvgPower_1200", 1800: "maxAvgPower_1800",
+}
+
+def _fetch_power_activities(weeks_back=12):
+    cutoff = dt.date.today() - dt.timedelta(weeks=weeks_back)
+    all_acts = client.get_activities(0, 200)
+    return [
+        a for a in all_acts
+        if a.get("activityType", {}).get("typeKey", "") in
+           ("cycling", "mountain_biking", "road_biking", "indoor_cycling", "virtual_ride")
+        and a.get("avgPower")
+        and dt.date.fromisoformat(a.get("startTimeLocal", "")[:10]) >= cutoff
+    ]
+
+def _build_pdc(activities):
+    pdc = {s: 0 for s in _PDC_FIELDS}
+    for act in activities:
+        for secs, field in _PDC_FIELDS.items():
+            val = act.get(field)
+            if val and val > pdc[secs]:
+                pdc[secs] = int(val)
+    return pdc
+
+def _fit_cp_model(pdc):
+    """Critical Power: P(t) = CP + W'/t → regression on E = CP*t + W'"""
+    pts = [t for t in pdc if 120 <= t <= 1200 and pdc[t] > 0]
+    if len(pts) < 3:
+        return None, None
+    energies = [pdc[t] * t for t in pts]
+    n = len(pts)
+    sum_t  = sum(pts)
+    sum_e  = sum(energies)
+    sum_tt = sum(t * t for t in pts)
+    sum_te = sum(pts[i] * energies[i] for i in range(n))
+    denom  = n * sum_tt - sum_t ** 2
+    if denom == 0:
+        return None, None
+    cp = (n * sum_te - sum_t * sum_e) / denom
+    wp = (sum_e - cp * sum_t) / n
+    return round(cp), round(wp)
+
+def _ftp_from_20min(pdc):
+    best = pdc.get(1200, 0)
+    return round(best * 0.95) if best else None
+
+def _ftp_confidence(activities):
+    score = 50
+    n = len(activities)
+    if   n >= 30: score += 20
+    elif n >= 15: score += 10
+    elif n < 5:   score -= 15
+    wtss = sum(a.get("trainingStressScore", 0) or 0 for a in activities[:10])
+    if   wtss < 300: score += 5
+    elif wtss > 600: score -= 10
+    return max(0, min(100, score))
+
+async def ftpestimate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    await update.message.reply_text("⏳ מחשב FTP מ-12 השבועות האחרונים...")
+    try:
+        activities = _fetch_power_activities(weeks_back=12)
+        if not activities:
+            await update.message.reply_text("❌ לא נמצאו רכיבות עם Power Meter ב-12 השבועות האחרונים.")
+            return
+
+        pdc    = _build_pdc(activities)
+        ftp_cp, wp = _fit_cp_model(pdc)
+        ftp_20     = _ftp_from_20min(pdc)
+        conf       = _ftp_confidence(activities)
+        conf_bar   = "█" * (conf // 10) + "░" * (10 - conf // 10)
+
+        estimates = [e for e in [ftp_cp, ftp_20] if e]
+        if not estimates:
+            await update.message.reply_text("❌ לא מספיק נתוני Power לחישוב.")
+            return
+
+        avg_ftp = round(sum(estimates) / len(estimates))
+        lines   = [f"🎯 FTP Estimator\n\nרכיבות שנותחו: {len(activities)} (12 שבועות)"]
+
+        if ftp_cp:
+            lines.append(f"\n📐 CP Model:        {ftp_cp}W")
+            if wp:
+                lines.append(f"   W' (אנאירובי):  {wp:,}J")
+        if ftp_20:
+            lines.append(f"📏 95% של 20min:    {ftp_20}W")
+
+        lines.append(f"\n{'─' * 28}")
+        lines.append(f"⚡ FTP משוער:       {avg_ftp}W")
+        lines.append(f"\nביטחון: {conf}/100\n{conf_bar}")
+
+        if ftp_cp and ftp_20:
+            diff = abs(ftp_cp - ftp_20)
+            if   diff <= 5:  lines.append("✅ שתי השיטות מסכימות")
+            elif diff <= 15: lines.append(f"🟡 הפרש {diff}W — בצע FTP Test לאימות")
+            else:            lines.append(f"🔴 הפרש גדול ({diff}W) — מומלץ FTP Test")
+
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ שגיאה: {e}")
+
+# =====================================================
 # BUTTON HANDLER
 # =====================================================
 
@@ -1131,163 +1199,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "skip":
         await query.edit_message_text("Workout skipped.")
-
-# =====================================================
-# =====================================================
-# FTP ESTIMATOR
-# =====================================================
-
-PDC_DURATIONS = {
-    1:    "maxAvgPower_1",
-    2:    "maxAvgPower_2",
-    5:    "maxAvgPower_5",
-    10:   "maxAvgPower_10",
-    20:   "maxAvgPower_20",
-    30:   "maxAvgPower_30",
-    60:   "maxAvgPower_60",
-    120:  "maxAvgPower_120",
-    300:  "maxAvgPower_300",
-    600:  "maxAvgPower_600",
-    1200: "maxAvgPower_1200",
-    1800: "maxAvgPower_1800",
-}
-
-
-def fetch_cycling_with_power(weeks_back=12):
-    from datetime import timedelta
-    cutoff   = dt.date.today() - timedelta(weeks=weeks_back)
-    all_acts = client.get_activities(0, 200)
-    return [
-        a for a in all_acts
-        if a.get("activityType", {}).get("typeKey", "") in
-           ("cycling", "mountain_biking", "road_biking", "indoor_cycling", "virtual_ride")
-        and a.get("avgPower")
-        and dt.date.fromisoformat(a.get("startTimeLocal", "")[:10]) >= cutoff
-    ]
-
-
-def build_pdc(activities):
-    pdc = {s: 0 for s in PDC_DURATIONS}
-    for act in activities:
-        for secs, field in PDC_DURATIONS.items():
-            val = act.get(field)
-            if val and val > pdc[secs]:
-                pdc[secs] = int(val)
-    return pdc
-
-
-def fit_cp_model(pdc):
-    """Critical Power model: P(t) = CP + W'/t → Linear regression on E = CP*t + W'"""
-    pts = [t for t in pdc if 120 <= t <= 1200 and pdc[t] > 0]
-    if len(pts) < 3:
-        return None, None
-
-    times    = pts
-    energies = [pdc[t] * t for t in times]
-    n        = len(times)
-    sum_t    = sum(times)
-    sum_e    = sum(energies)
-    sum_tt   = sum(t * t for t in times)
-    sum_te   = sum(times[i] * energies[i] for i in range(n))
-    denom    = n * sum_tt - sum_t ** 2
-
-    if denom == 0:
-        return None, None
-
-    cp = (n * sum_te - sum_t * sum_e) / denom
-    wp = (sum_e - cp * sum_t) / n
-    return round(cp), round(wp)
-
-
-def ftp_from_20min(pdc):
-    best = pdc.get(1200, 0)
-    return round(best * 0.95) if best else None
-
-
-def ftp_confidence(activities, metrics):
-    score = 50
-    n = len(activities)
-    if   n >= 30: score += 20
-    elif n >= 15: score += 10
-    elif n >= 5:  score += 0
-    else:         score -= 15
-
-    hrv_st = metrics.get("hrv_status", "").upper()
-    if   hrv_st == "BALANCED":             score += 15
-    elif hrv_st in ("POOR", "LOW"):        score -= 15
-
-    bb = metrics.get("body_battery")
-    if   bb and bb >= 70: score += 10
-    elif bb and bb < 40:  score -= 10
-
-    wtss = sum(
-        a.get("trainingStressScore", 0) or 0
-        for a in activities[:10]
-    )
-    if   wtss < 300: score += 5
-    elif wtss > 600: score -= 10
-
-    return max(0, min(100, score))
-
-
-async def ftpestimate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update): return
-
-    await update.message.reply_text("⏳ מחשב FTP... זה עשוי לקחת כמה שניות.")
-
-    try:
-        activities = fetch_cycling_with_power(weeks_back=12)
-
-        if not activities:
-            await update.message.reply_text(
-                "❌ לא נמצאו רכיבות עם Power Meter ב-12 השבועות האחרונים."
-            )
-            return
-
-        pdc    = build_pdc(activities)
-        ftp_cp, wp = fit_cp_model(pdc)
-        ftp_20     = ftp_from_20min(pdc)
-        metrics    = get_metrics()
-        conf       = ftp_confidence(activities, metrics)
-        conf_bar   = "█" * (conf // 10) + "░" * (10 - conf // 10)
-
-        estimates = [e for e in [ftp_cp, ftp_20] if e]
-        if not estimates:
-            await update.message.reply_text("❌ לא מספיק נתוני Power לחישוב.")
-            return
-
-        avg_ftp = round(sum(estimates) / len(estimates))
-
-        lines = [
-            f"🎯 FTP Estimator\n",
-            f"רכיבות שנותחו: {len(activities)} (12 שבועות)",
-        ]
-
-        if ftp_cp:
-            lines.append(f"\n📐 CP Model:        {ftp_cp}W")
-            if wp:
-                lines.append(f"   W' (אנאירובי):  {wp:,}J")
-        if ftp_20:
-            lines.append(f"📏 95% של 20min:    {ftp_20}W")
-
-        lines.append(f"\n{'─' * 30}")
-        lines.append(f"⚡ FTP משוער:       {avg_ftp}W")
-        lines.append(f"\nביטחון: {conf}/100")
-        lines.append(conf_bar)
-
-        if ftp_cp and ftp_20:
-            diff = abs(ftp_cp - ftp_20)
-            if   diff <= 5:  lines.append("✅ שתי השיטות מסכימות — תוצאה אמינה")
-            elif diff <= 15: lines.append(f"🟡 הפרש {diff}W — בצע FTP Test לאימות")
-            else:            lines.append(f"🔴 הפרש גדול ({diff}W) — מומלץ FTP Test")
-
-        if conf < 50:
-            lines.append("\n⚠️ ביטחון נמוך — המתן ליום עם HRV מאוזן")
-
-        await update.message.reply_text("\n".join(lines))
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ שגיאה: {e}")
 
 # =====================================================
 # POST INIT
@@ -1331,9 +1242,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format, *args):
-        # מציג רק פינגים בלוג — עוזר לאבחן אם UptimeRobot מגיע
-        print(f"[health] {args[0]} {args[1]}")
+    def log_message(self, *args):
+        pass  # שתיקה — לא להציף לוגים בכל פינג
 
 
 def start_health_server():
@@ -1347,36 +1257,27 @@ def start_health_server():
 # =====================================================
 
 def main():
-    # הבוט רץ ב-thread נפרד
-    def run_bot():
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    threading.Thread(target=start_health_server, daemon=True).start()
 
-        app = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .post_init(post_init)
-            .get_updates_read_timeout(30)
-            .get_updates_connect_timeout(30)
-            .read_timeout(30)
-            .connect_timeout(30)
-            .build()
-        )
-        app.add_error_handler(error_handler)
-        app.add_handler(CommandHandler("coach",       coach_command))
-        app.add_handler(CommandHandler("status",      status_command))
-        app.add_handler(CommandHandler("setplan",     setplan_command))
-        app.add_handler(CommandHandler("ftpdone",     ftpdone_command))
-        app.add_handler(CommandHandler("ftpestimate", ftpestimate_command))
-        app.add_handler(CallbackQueryHandler(button_handler))
-        print("Telegram bot started")
-        app.run_polling()
-
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    # Health server רץ ב-main thread — Render יודע שהשירות חי
-    start_health_server()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .get_updates_read_timeout(30)
+        .get_updates_connect_timeout(30)
+        .read_timeout(30)
+        .connect_timeout(30)
+        .build()
+    )
+    app.add_error_handler(error_handler)
+    app.add_handler(CommandHandler("coach",       coach_command))
+    app.add_handler(CommandHandler("status",      status_command))
+    app.add_handler(CommandHandler("setplan",     setplan_command))
+    app.add_handler(CommandHandler("ftpdone",     ftpdone_command))
+    app.add_handler(CommandHandler("ftpestimate", ftpestimate_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    print("Telegram bot started")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
