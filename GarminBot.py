@@ -1349,6 +1349,10 @@ def start_health_server():
 def main():
     # הבוט רץ ב-thread נפרד
     def run_bot():
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         app = (
             Application.builder()
             .token(BOT_TOKEN)
